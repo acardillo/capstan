@@ -2,6 +2,7 @@
 //! in modules under this crate; the binary in `main.rs` will drive the engine.
 
 pub mod buffer;
+pub mod processor;
 
 use cpal::{Sample, SampleFormat};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};

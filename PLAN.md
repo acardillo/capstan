@@ -46,7 +46,7 @@ Goal: get audio output working and validate core types.
 - [x] Open an output stream with `cpal`, output silence
 - [x] Implement `AudioBuffer` — fixed size, no post-construction allocation
 - [x] Write `AudioBuffer` unit tests
-- [ ] Define the `Processor` trait
+- [x] Define the `Processor` trait
 - [ ] Implement `SineGenerator` node
 - [ ] Implement `GainProcessor` node
 - [ ] Hardcode a chain: `SineGenerator → GainProcessor → cpal output`
