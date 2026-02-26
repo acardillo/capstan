@@ -1,6 +1,8 @@
 //! Capstan Library root. Audio types (AudioBuffer, Processor, graph, etc.) will live
 //! in modules under this crate; the binary in `main.rs` will drive the engine.
 
+pub mod buffer;
+
 use cpal::{Sample, SampleFormat};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
