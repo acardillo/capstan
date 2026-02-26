@@ -29,6 +29,7 @@ The project demonstrates: lock-free concurrency, Rust's ownership model under re
 ```
 
 **Core types:**
+
 - `AudioBuffer` — fixed f32 sample array, allocated once, reused forever
 - `Processor` trait — interface every audio node implements
 - `AudioGraph` — node/edge structure, lives on control thread
@@ -41,8 +42,8 @@ The project demonstrates: lock-free concurrency, Rust's ownership model under re
 
 Goal: get audio output working and validate core types.
 
-- [ ] Set up Rust project, add `cpal` dependency
-- [ ] Open an output stream with `cpal`, output silence
+- [x] Set up Rust project, add `cpal` dependency
+- [x] Open an output stream with `cpal`, output silence
 - [ ] Implement `AudioBuffer` — fixed size, no post-construction allocation
 - [ ] Write `AudioBuffer` unit tests
 - [ ] Define the `Processor` trait
@@ -112,6 +113,6 @@ Goal: compile the engine to WebAssembly and run it in a browser.
 
 _Update this section when the plan changes due to new decisions or scope shifts._
 
-| Date | Change |
-|------|--------|
+| Date | Change               |
+| ---- | -------------------- |
 | —    | Initial plan created |
