@@ -44,8 +44,8 @@ Goal: get audio output working and validate core types.
 
 - [x] Set up Rust project, add `cpal` dependency
 - [x] Open an output stream with `cpal`, output silence
-- [ ] Implement `AudioBuffer` — fixed size, no post-construction allocation
-- [ ] Write `AudioBuffer` unit tests
+- [x] Implement `AudioBuffer` — fixed size, no post-construction allocation
+- [x] Write `AudioBuffer` unit tests
 - [ ] Define the `Processor` trait
 - [ ] Implement `SineGenerator` node
 - [ ] Implement `GainProcessor` node
