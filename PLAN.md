@@ -48,9 +48,9 @@ Goal: get audio output working and validate core types.
 - [x] Write `AudioBuffer` unit tests
 - [x] Define the `Processor` trait
 - [x] Implement `SineGenerator` node
-- [ ] Implement `GainProcessor` node
-- [ ] Hardcode a chain: `SineGenerator → GainProcessor → cpal output`
-- [ ] Hear a tone
+- [x] Implement `GainProcessor` node
+- [x] Hardcode a chain: `SineGenerator → GainProcessor → cpal output`
+- [x] Hear a tone
 
 ---
 
