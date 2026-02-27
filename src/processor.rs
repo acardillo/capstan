@@ -19,7 +19,7 @@ impl Processor for Silence {
 #[cfg(test)]
 mod tests {
     use super::{Processor, Silence};
-    use crate::buffer::AudioBuffer;
+    use crate::audio_buffer::AudioBuffer;
 
     #[test]
     /// Test that the processor can mutate a buffer.

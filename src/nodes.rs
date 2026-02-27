@@ -59,7 +59,7 @@ impl Processor for GainProcessor {
 mod tests {
     use super::{GainProcessor, SineGenerator};
     use crate::processor::Processor;
-    use crate::buffer::AudioBuffer;
+    use crate::audio_buffer::AudioBuffer;
 
     #[test]
     /// Test that the sine generator produces sine-like output - has non-zero values and values between -1 and 1.

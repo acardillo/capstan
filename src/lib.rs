@@ -1,7 +1,7 @@
 //! Capstan Library root. Audio types (AudioBuffer, Processor, graph, etc.) will live
 //! in modules under this crate; the binary in `main.rs` will drive the engine.
 
-pub mod buffer;
+pub mod audio_buffer;
 pub mod nodes;
 pub mod processor;
 
