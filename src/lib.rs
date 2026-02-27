@@ -3,6 +3,7 @@
 
 pub mod audio_buffer;
 pub mod command;
+pub mod event;
 pub mod nodes;
 pub mod processor;
 pub mod ring_buffer;

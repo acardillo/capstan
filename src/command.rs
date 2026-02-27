@@ -4,8 +4,11 @@
 /// Instruction from the control thread to the audio thread.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
+    /// Placeholder; remove or replace when you add real commands.
     NoOp,
+    /// Control says: set gain to this value.
     SetGain(f32),
+    /// Control says: quit the stream.
     Quit, 
 }
 
