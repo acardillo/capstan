@@ -60,7 +60,7 @@ Goal: build the communication layer between control and audio threads.
 
 - [x] Implement SPSC ring buffer using atomics (`AtomicUsize`, `MaybeUninit`)
 - [x] Document every `unsafe` block with invariant explanation
-- [ ] Define `Command` enum (no heap allocation)
+- [x] Define `Command` enum (no heap allocation)
 - [ ] Define `Event` enum (no heap allocation)
 - [ ] Wrap ring buffer into `CommandSender` / `CommandReceiver` types
 - [ ] Wrap ring buffer into `EventSender` / `EventReceiver` types

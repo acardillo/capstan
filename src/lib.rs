@@ -2,9 +2,10 @@
 //! in modules under this crate; the binary in `main.rs` will drive the engine.
 
 pub mod audio_buffer;
-pub mod ring_buffer;
+pub mod command;
 pub mod nodes;
 pub mod processor;
+pub mod ring_buffer;
 
 use cpal::{Sample, SampleFormat};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
