@@ -34,12 +34,32 @@ impl Processor for SineGenerator {
     }
 }
 
+/// Multiplies each sample by a gain factor. In-place: reads and writes the same buffer.
+pub struct GainProcessor {
+    /// Linear gain (1.0 = unity, 0.0 = silence).
+    pub gain: f32,
+}
+
+impl GainProcessor {
+    /// Creates a gain processor with the given linear gain.
+    pub fn new(gain: f32) -> Self {
+        Self { gain }
+    }
+}
+
+impl Processor for GainProcessor {
+    fn process(&mut self, output: &mut [f32]) {
+        for sample in output.iter_mut() {
+            *sample *= self.gain;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::SineGenerator;
+    use super::{GainProcessor, SineGenerator};
     use crate::processor::Processor;
     use crate::buffer::AudioBuffer;
-    use std::f32::consts::PI;
 
     #[test]
     /// Test that the sine generator produces sine-like output - has non-zero values and values between -1 and 1.
@@ -68,5 +88,29 @@ mod tests {
         let epsilon = 1e-5;  // float comparison
         assert!((actual_first - expected_first_of_second).abs() < epsilon);
         assert_ne!(buffer.as_slice(), buffer2.as_slice());
+    }
+
+    #[test]
+    /// Test that the gain processor scales the output.
+    fn test_gain_processor_scales_output() {
+        let mut gain_processor = GainProcessor::new(0.5);
+        let mut buffer = AudioBuffer::new(128);
+        for sample in buffer.as_mut_slice().iter_mut() {
+            *sample = 1.0;
+        }
+        gain_processor.process(buffer.as_mut_slice());
+        assert!(buffer.as_slice().iter().all(|&x| x == 0.5));
+    }
+
+    #[test]
+    /// Test that the buffer is unchanged when the gain is 1.0.
+    fn test_gain_processor_unity_preserves_input() {
+        let mut gain_processor = GainProcessor::new(1.0);
+        let mut buffer = AudioBuffer::new(128);
+        for sample in buffer.as_mut_slice().iter_mut() {
+            *sample = 1.0;
+        }
+        gain_processor.process(buffer.as_mut_slice());
+        assert!(buffer.as_slice().iter().all(|&x| x == 1.0));
     }
 }
