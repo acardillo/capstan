@@ -1,7 +1,7 @@
 //! Capstan binary — opens the audio stream and drives the engine.
 
-use capstan::run_silent_output;
+use capstan::run_tone;
 
 fn main() {
-    run_silent_output();
+    run_tone();
 }
