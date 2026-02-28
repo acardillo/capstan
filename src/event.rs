@@ -1,6 +1,8 @@
 //! Event: notifications from the audio thread to the control thread. No heap allocation:
 //! all variants are fixed-size so they can be stored in the SPSC ring buffer.
 
+use std::marker::PhantomData;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::ring_buffer::RingBuffer;
@@ -18,8 +20,10 @@ pub enum Event {
 
 /// Producer side of the event channel. Only the audio thread should hold this.
 /// Call `try_send(event)` to enqueue an event for the control thread.
+/// Does not implement `Send`: must not be moved to another thread.
 pub struct EventSender {
     inner: Arc<RingBuffer<Event>>,
+    _audio_thread_only: PhantomData<Rc<()>>,
 }
 
 impl EventSender {
@@ -33,6 +37,7 @@ impl EventSender {
 /// Call `try_recv()` to drain pending events (e.g. in the main loop).
 pub struct EventReceiver {
     inner: Arc<RingBuffer<Event>>,
+    _control_thread_only: PhantomData<Rc<()>>,
 }
 
 impl EventReceiver {
@@ -46,7 +51,16 @@ impl EventReceiver {
 pub fn event_channel(capacity: usize) -> (EventSender, EventReceiver) {
     let ring_buffer = RingBuffer::<Event>::new(capacity);
     let arc = Arc::new(ring_buffer);
-    (EventSender { inner: arc.clone() }, EventReceiver { inner: arc })
+    (
+        EventSender {
+            inner: arc.clone(),
+            _audio_thread_only: PhantomData,
+        },
+        EventReceiver { 
+            inner: arc,
+            _control_thread_only: PhantomData,
+        },
+    )
 }
 
 #[cfg(test)]

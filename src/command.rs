@@ -1,6 +1,8 @@
 //! Command: instructions from the control thread to the audio thread. No heap allocation:
 //! all variants are fixed-size so they can be stored in the SPSC ring buffer.
 
+use std::marker::PhantomData;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::ring_buffer::RingBuffer;
@@ -18,8 +20,10 @@ pub enum Command {
 
 /// Producer side of the command channel. Only the control thread should hold this.
 /// Call `try_send(cmd)` to enqueue a command for the audio thread.
+/// Does not implement `Send`: must not be moved to another thread.
 pub struct CommandSender {
     inner: Arc<RingBuffer<Command>>,
+    _control_thread_only: PhantomData<Rc<()>>,
 }
 
 impl CommandSender {
@@ -31,8 +35,10 @@ impl CommandSender {
 
 /// Consumer side of the command channel. Only the audio thread should hold this.
 /// Call `try_recv()` at the top of each audio callback to drain pending commands.
+/// Does not implement `Send`: must not be moved to another thread.
 pub struct CommandReceiver {
     inner: Arc<RingBuffer<Command>>,
+    _audio_thread_only: PhantomData<Rc<()>>,
 }
 
 impl CommandReceiver {
@@ -46,7 +52,16 @@ impl CommandReceiver {
 pub fn command_channel(capacity: usize) -> (CommandSender, CommandReceiver) {
     let ring_buffer = RingBuffer::<Command>::new(capacity);
     let arc = Arc::new(ring_buffer);
-    (CommandSender { inner: arc.clone() }, CommandReceiver { inner: arc })
+    (
+        CommandSender { 
+            inner: arc.clone(), 
+            _control_thread_only: PhantomData 
+        },
+        CommandReceiver {
+            inner: arc,
+            _audio_thread_only: PhantomData,
+        },
+    )
 }
 
 #[cfg(test)]
