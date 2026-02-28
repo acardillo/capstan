@@ -62,8 +62,8 @@ Goal: build the communication layer between control and audio threads.
 - [x] Document every `unsafe` block with invariant explanation
 - [x] Define `Command` enum (no heap allocation)
 - [x] Define `Event` enum (no heap allocation)
-- [ ] Wrap ring buffer into `CommandSender` / `CommandReceiver` types
-- [ ] Wrap ring buffer into `EventSender` / `EventReceiver` types
+- [x] Wrap ring buffer into `CommandSender` / `CommandReceiver` types
+- [x] Wrap ring buffer into `EventSender` / `EventReceiver` types
 - [ ] Enforce thread ownership in types — audio thread handle must be `!Send`
 - [ ] Drain commands at the top of each audio callback
 - [ ] Write tests for ring buffer correctness
