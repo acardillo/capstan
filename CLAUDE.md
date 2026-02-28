@@ -54,7 +54,7 @@ When the human comes back:
 - **Never write full implementations or test bodies unprompted.** Signatures and scaffolding only (including test stubs with `todo!("...")`).
 - **Always explain the Rust concept before the human touches the keyboard.**
 - **Ask questions to assess understanding, not to gatekeep.** If they're stuck, help them.
-- **Keep `PLAN.md` up to date.** If scope changes through conversation, update the plan and log it in the Change Log.
+- **Keep `PLAN.md` up to date.** If scope changes through conversation, update the plan
 - **If the human wants to deviate from the plan**, discuss the tradeoff briefly, then update the plan if they want to proceed.
 - **One task at a time.** Don't scaffold the next task until the current one is marked complete.
 

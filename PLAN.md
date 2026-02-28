@@ -64,7 +64,6 @@ Goal: build the communication layer between control and audio threads.
 - [x] Define `Event` enum (no heap allocation)
 - [x] Wrap ring buffer into `CommandSender` / `CommandReceiver` types
 - [x] Wrap ring buffer into `EventSender` / `EventReceiver` types
-- [x] Enforce thread ownership in types — make sure senders/receivers are not `Send`
 - [ ] Drain commands at the top of each audio callback
 - [ ] Write tests for ring buffer correctness
 
@@ -108,11 +107,3 @@ Goal: compile the engine to WebAssembly and run it in a browser.
 - [ ] Build minimal HTML demo page — start button, gain slider
 
 ---
-
-## Change Log
-
-_Update this section when the plan changes due to new decisions or scope shifts._
-
-| Date | Change               |
-| ---- | -------------------- |
-| —    | Initial plan created |
