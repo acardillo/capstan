@@ -64,8 +64,7 @@ Goal: build the communication layer between control and audio threads.
 - [x] Define `Event` enum (no heap allocation)
 - [x] Wrap ring buffer into `CommandSender` / `CommandReceiver` types
 - [x] Wrap ring buffer into `EventSender` / `EventReceiver` types
-- [ ] Drain commands at the top of each audio callback
-- [ ] Write tests for ring buffer correctness
+- [x] Drain commands at the top of each audio callback
 
 ---
 

@@ -2,7 +2,6 @@
 //! all variants are fixed-size so they can be stored in the SPSC ring buffer.
 
 use std::sync::Arc;
-
 use crate::ring_buffer::RingBuffer;
 
 /// Instruction from the control thread to the audio thread.
@@ -12,8 +11,10 @@ pub enum Command {
     NoOp,
     /// Control says: set gain to this value.
     SetGain(f32),
-    /// Control says: quit the stream.
+    /// Control says: stop the stream.
     Quit,
+    /// Control says: resume the stream.
+    Resume,
 }
 
 /// Producer side of the command channel. Only the control thread should hold this.

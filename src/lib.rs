@@ -3,6 +3,7 @@
 
 pub mod audio_buffer;
 pub mod command;
+pub mod engine;
 pub mod event;
 pub mod nodes;
 pub mod processor;
@@ -13,6 +14,8 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 use crate::nodes::{GainProcessor, SineGenerator};
 use crate::processor::Processor;
+use crate::command::CommandReceiver;
+use crate::engine::Engine;
 
 /// Opens the default output device and runs a stream that outputs silence.
 pub fn run_silent_output() {
@@ -70,6 +73,45 @@ pub fn run_tone() {
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                 sine.process(data);
                 gain.process(data);
+            },
+            err_fn,
+            None,
+        )
+        .expect("failed to build output stream");
+
+    stream.play().expect("failed to start stream");
+    std::thread::park();
+}
+
+/// Like `run_tone()`, but scaffolds the “drain commands at the top of the callback” pattern.
+///
+/// Note: the `cpal` callback must be `Send + 'static`, so any state captured by the closure must
+/// also be `Send`. This is why the channel handle types used here must remain `Send`.
+pub fn run_tone_with_command_drain(cmd_rx: CommandReceiver) {
+    let host = cpal::default_host();
+    let device = host.default_output_device().expect("no output device available");
+    let supported_config = device
+        .default_output_config()
+        .expect("no output config available");
+    let sample_format = supported_config.sample_format();
+    let config: cpal::StreamConfig = supported_config.into();
+    let sample_rate = config.sample_rate;
+
+    if sample_format != SampleFormat::F32 {
+        panic!(
+            "run_tone_with_command_drain only supports F32 output; device has {:?}",
+            sample_format
+        );
+    }
+
+    let mut engine = Engine::new(sample_rate, 440.0, 0.5);
+
+    let err_fn = move |err: cpal::StreamError| eprintln!("output stream error: {}", err);
+    let stream = device
+        .build_output_stream(
+            &config,
+            move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                engine.process_audio(&cmd_rx, data);
             },
             err_fn,
             None,
