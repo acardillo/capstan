@@ -67,14 +67,16 @@ pub fn run_tone() {
 
     let mut sine = SineGenerator::new(440.0, sample_rate);
     let mut gain = GainProcessor::new(0.5);
+    let mut scratch = vec![0.0f32; 8192];
 
     let err_fn = move |err: cpal::StreamError| eprintln!("output stream error: {}", err);
     let stream = device
         .build_output_stream(
             &config,
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                sine.process(data);
-                gain.process(data);
+                let n = data.len().min(scratch.len());
+                sine.process(&[], &mut scratch[..n]);
+                gain.process(&[&scratch[..n]], data);
             },
             err_fn,
             None,

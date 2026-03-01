@@ -6,7 +6,7 @@ use std::thread;
 use capstan::command::{command_channel, Command};
 use capstan::event::{event_channel, Event};
 use capstan::graph::{AudioGraph, CompiledGraph, GraphNode, NodeId};
-use capstan::nodes::{GainProcessor, SineGenerator};
+use capstan::nodes::{GainProcessor, Mixer, SineGenerator};
 use capstan::run_tone_with_command_drain;
 use clap::Parser;
 
@@ -30,6 +30,17 @@ fn build_default_graph(freq_hz: f32, gain: f32) -> Option<CompiledGraph> {
     g.compile(DEFAULT_FRAME_COUNT).ok()
 }
 
+/// Two sines → mixer. Node order: sine0, sine1, mixer. Gains default to 0.5 each.
+fn build_mixer_graph(freq1_hz: f32, freq2_hz: f32, gain1: f32, gain2: f32) -> Option<CompiledGraph> {
+    let mut g = AudioGraph::new();
+    let s0 = g.add_node(GraphNode::Sine(SineGenerator::new(freq1_hz, DEFAULT_SAMPLE_RATE)));
+    let s1 = g.add_node(GraphNode::Sine(SineGenerator::new(freq2_hz, DEFAULT_SAMPLE_RATE)));
+    let mix = g.add_node(GraphNode::Mixer(Mixer::new(vec![gain1, gain2])));
+    g.add_edge(s0, mix);
+    g.add_edge(s1, mix);
+    g.compile(DEFAULT_FRAME_COUNT).ok()
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -41,7 +52,7 @@ fn main() {
         run_tone_with_command_drain(cmd_rx, evt_tx, shutdown_rx);
     });
 
-    println!("Capstan — real-time audio. Commands: gain <0-1> | graph [freq] [gain] | quit | resume | help");
+    println!("Capstan — real-time audio. Commands: gain <0-1> | graph [freq] [gain] | graph mix [f1] [f2] [g1] [g2] | quit | resume | help");
     let stdin = io::stdin();
     let mut lines = stdin.lock().lines();
 
@@ -78,6 +89,43 @@ fn main() {
                     eprintln!("Failed to compile graph.");
                 }
             }
+            ["graph", "mix"] => {
+                if let Some(compiled) = build_mixer_graph(440.0, 660.0, 0.5, 0.5) {
+                    let _ = cmd_tx.try_send(Command::SwapGraph(compiled));
+                    println!("Swapped mixer graph (440 Hz + 660 Hz → mixer 0.5, 0.5).");
+                } else {
+                    eprintln!("Failed to compile graph.");
+                }
+            }
+            ["graph", "mix", f1, f2] => {
+                if let (Ok(a), Ok(b)) = (f1.parse::<f32>(), f2.parse::<f32>()) {
+                    if let Some(compiled) = build_mixer_graph(a, b, 0.5, 0.5) {
+                        let _ = cmd_tx.try_send(Command::SwapGraph(compiled));
+                        println!("Swapped mixer graph ({} Hz + {} Hz → mixer 0.5, 0.5).", a, b);
+                    } else {
+                        eprintln!("Failed to compile graph.");
+                    }
+                } else {
+                    println!("Usage: graph mix [freq1] [freq2] [gain1] [gain2]");
+                }
+            }
+            ["graph", "mix", f1, f2, g1, g2] => {
+                if let (Ok(a), Ok(b), Ok(ga), Ok(gb)) = (
+                    f1.parse::<f32>(),
+                    f2.parse::<f32>(),
+                    g1.parse::<f32>(),
+                    g2.parse::<f32>(),
+                ) {
+                    if let Some(compiled) = build_mixer_graph(a, b, ga, gb) {
+                        let _ = cmd_tx.try_send(Command::SwapGraph(compiled));
+                        println!("Swapped mixer graph ({} Hz + {} Hz → mixer {}, {}).", a, b, ga, gb);
+                    } else {
+                        eprintln!("Failed to compile graph.");
+                    }
+                } else {
+                    println!("Usage: graph mix [freq1] [freq2] [gain1] [gain2]");
+                }
+            }
             ["graph", freq] => {
                 if let Ok(f) = freq.parse::<f32>() {
                     if let Some(compiled) = build_default_graph(f, 0.5) {
@@ -87,7 +135,7 @@ fn main() {
                         eprintln!("Failed to compile graph.");
                     }
                 } else {
-                    println!("Usage: graph [freq] [gain]");
+                    println!("Usage: graph [freq] [gain]  or  graph mix [f1] [f2] [g1] [g2]");
                 }
             }
             ["graph", freq, gain] => {
@@ -105,6 +153,7 @@ fn main() {
             ["help" | "h" | "?"] => {
                 println!("  gain <n>  (g <n>)   Set gain 0–1 (hardcoded chain or last graph)");
                 println!("  graph [freq] [gain] Swap in default sine→gain graph (default 440, 0.5)");
+                println!("  graph mix [f1] [f2] [g1] [g2]  Two sines → mixer (default 440, 660, 0.5, 0.5)");
                 println!("  quit (q)             Stop engine and exit");
                 println!("  resume (r)           Resume after quit");
                 println!("  help (h)             This message");

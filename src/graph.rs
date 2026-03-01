@@ -3,7 +3,7 @@
 use std::collections::VecDeque;
 
 use crate::audio_buffer::AudioBuffer;
-use crate::nodes::{GainProcessor, SineGenerator};
+use crate::nodes::{GainProcessor, Mixer, SineGenerator};
 use crate::processor::Processor;
 
 /// Identifies a node in the audio graph. Newtype so we don't confuse node indices with other integers.
@@ -27,13 +27,15 @@ impl NodeId {
 pub enum GraphNode {
     Sine(SineGenerator),
     Gain(GainProcessor),
+    Mixer(Mixer),
 }
 
 impl Processor for GraphNode {
-    fn process(&mut self, output: &mut [f32]) {
+    fn process(&mut self, inputs: &[&[f32]], output: &mut [f32]) {
         match self {
-            GraphNode::Sine(s) => s.process(output),
-            GraphNode::Gain(g) => g.process(output),
+            GraphNode::Sine(s) => s.process(inputs, output),
+            GraphNode::Gain(g) => g.process(inputs, output),
+            GraphNode::Mixer(m) => m.process(inputs, output),
         }
     }
 }
@@ -118,38 +120,58 @@ impl AudioGraph {
         Ok(order)
     }
 
-    /// Builds a CompiledGraph from this graph: topo-sorted nodes and one scratch buffer.
-    /// Returns `Err(())` if the graph has a cycle. `frame_count` is the scratch (and output) buffer size.
+    /// Builds a CompiledGraph: topo-sorted nodes, one scratch buffer per node, and input indices per node.
     pub fn compile(&self, frame_count: usize) -> Result<CompiledGraph, ()> {
         let order = self.topological_sort()?;
+        let n = order.len();
         let nodes: Vec<GraphNode> = order
             .iter()
             .map(|&id| self.nodes[id.as_usize()].clone())
             .collect();
-        let scratch = AudioBuffer::new(frame_count);
-        Ok(CompiledGraph { nodes, scratch })
+        let scratch_buffers: Vec<AudioBuffer> = (0..n).map(|_| AudioBuffer::new(frame_count)).collect();
+        let input_buf_indices: Vec<Vec<usize>> = (0..n)
+            .map(|i| {
+                (0..n)
+                    .filter(|&j| self.adjacency[order[j].as_usize()].contains(&order[i]))
+                    .collect()
+            })
+            .collect();
+        Ok(CompiledGraph {
+            nodes,
+            scratch_buffers,
+            input_buf_indices,
+        })
     }
 }
 
-/// Immutable execution plan: nodes in topological order plus pre-allocated scratch buffer.
-/// Built on the control thread, then run on the audio thread (no allocation in process).
+/// Immutable execution plan: nodes in topo order, one scratch buffer per node, and per-node input indices.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CompiledGraph {
-    /// Nodes in execution order (sources first, sinks last).
     nodes: Vec<GraphNode>,
-    /// Single scratch buffer; all nodes run in place on this, then it is copied to output.
-    scratch: AudioBuffer,
+    scratch_buffers: Vec<AudioBuffer>,
+    /// input_buf_indices[i] = buffer indices (0..i) that are inputs to node i.
+    input_buf_indices: Vec<Vec<usize>>,
 }
 
 impl CompiledGraph {
-    /// Runs the graph: each node processes the scratch buffer in order; result is copied to `output`.
-    /// `output.len()` should match the scratch buffer length (frame_count used at compile time).
+    /// Runs the graph: each node reads from its input buffers and writes to its scratch; last node's buffer is copied to output.
     pub fn process(&mut self, output: &mut [f32]) {
-        for node in &mut self.nodes {
-            node.process(self.scratch.as_mut_slice());
+        let n = self.nodes.len();
+        if n == 0 {
+            return;
         }
-        let n = self.scratch.len().min(output.len());
-        output[..n].copy_from_slice(self.scratch.as_slice());
+        for i in 0..n {
+            let (head, tail) = self.scratch_buffers.split_at_mut(i);
+            let out_buf = &mut tail[0];
+            let input_slices: Vec<&[f32]> = self.input_buf_indices[i]
+                .iter()
+                .map(|&j| head[j].as_slice())
+                .collect();
+            self.nodes[i].process(&input_slices, out_buf.as_mut_slice());
+        }
+        let last = self.scratch_buffers.len() - 1;
+        let len = self.scratch_buffers[last].len().min(output.len());
+        output[..len].copy_from_slice(self.scratch_buffers[last].as_slice());
     }
 }
 
@@ -227,5 +249,21 @@ mod tests {
         compiled.process(&mut output);
         let max_abs = output.iter().map(|s| s.abs()).fold(0.0f32, |a, b| a.max(b));
         assert!(max_abs > 0.0 && max_abs <= 0.26, "sine then gain 0.25 => amplitude ~0.25");
+    }
+
+    #[test]
+    fn test_compiled_graph_with_mixer() {
+        use crate::nodes::Mixer;
+        let mut g = AudioGraph::new();
+        let s0 = g.add_node(GraphNode::Sine(SineGenerator::new(440.0, 48_000)));
+        let s1 = g.add_node(GraphNode::Sine(SineGenerator::new(660.0, 48_000)));
+        let mix = g.add_node(GraphNode::Mixer(Mixer::new(vec![0.5, 0.5])));
+        g.add_edge(s0, mix);
+        g.add_edge(s1, mix);
+        let mut compiled = g.compile(64).unwrap();
+        let mut output = vec![0.0f32; 64];
+        compiled.process(&mut output);
+        let max_abs = output.iter().map(|s| s.abs()).fold(0.0f32, |a, b| a.max(b));
+        assert!(max_abs > 0.0 && max_abs <= 1.1, "two sines mixed at 0.5 each => sum amplitude <= 1");
     }
 }

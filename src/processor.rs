@@ -1,15 +1,15 @@
 //! Audio node interface. Every source, filter, and processor in the graph implements this trait.
 
 /// Interface for all audio nodes. Implementations must be real-time safe: no allocation, no locks.
+/// `inputs` are the output buffers of predecessor nodes (empty for sources); write to `output`.
 pub trait Processor {
-    /// Fill `output` with this block of samples. Called on the audio thread each callback.
-    fn process(&mut self, output: &mut [f32]);
+    fn process(&mut self, inputs: &[&[f32]], output: &mut [f32]);
 }
 
 pub struct Silence;
 
 impl Processor for Silence {
-    fn process(&mut self, output: &mut [f32]) {
+    fn process(&mut self, _inputs: &[&[f32]], output: &mut [f32]) {
         for sample in output.iter_mut() {
             *sample = 0.0;
         }
@@ -33,7 +33,7 @@ mod tests {
 
         let mut silence_processor = Silence;
 
-        silence_processor.process(buffer.as_mut_slice());
+        silence_processor.process(&[], buffer.as_mut_slice());
         assert!(buffer.as_slice().iter().all(|&x| x == 0.0));
     }
 
@@ -43,7 +43,7 @@ mod tests {
         let buffer_len = 128;
         let mut buffer = AudioBuffer::new(buffer_len);
         let mut silence_processor = Silence;
-        silence_processor.process(buffer.as_mut_slice());
+        silence_processor.process(&[], buffer.as_mut_slice());
         assert_eq!(buffer.len(), buffer_len);
     }
 }

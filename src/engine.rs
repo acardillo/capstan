@@ -1,19 +1,24 @@
 //! Engine: runs a compiled graph or a hardcoded chain on the audio thread,
 //! draining commands at the top of each callback.
 
+use crate::audio_buffer::AudioBuffer;
 use crate::command::{Command, CommandReceiver};
 use crate::event::{Event, EventSender};
 use crate::graph::CompiledGraph;
 use crate::nodes::{GainProcessor, SineGenerator};
 use crate::processor::Processor;
 
+/// Max frames for fallback chain scratch (no allocation in callback).
+const FALLBACK_SCRATCH_FRAMES: usize = 4096;
+
 /// Engine state: optional compiled graph (when set, it is run); otherwise hardcoded sine→gain chain.
 pub struct Engine {
     sine_generator: SineGenerator,
     gain_processor: GainProcessor,
     should_quit: bool,
-    /// When Some, run this graph instead of the hardcoded chain.
     current_graph: Option<CompiledGraph>,
+    /// Scratch for fallback chain so gain has a separate input buffer.
+    fallback_scratch: AudioBuffer,
 }
 
 impl Engine {
@@ -23,6 +28,7 @@ impl Engine {
             gain_processor: GainProcessor::new(initial_gain),
             should_quit: false,
             current_graph: None,
+            fallback_scratch: AudioBuffer::new(FALLBACK_SCRATCH_FRAMES),
         }
     }
 
@@ -38,8 +44,14 @@ impl Engine {
         if let Some(ref mut graph) = self.current_graph {
             graph.process(output);
         } else {
-            self.sine_generator.process(output);
-            self.gain_processor.process(output);
+            let n = output.len().min(self.fallback_scratch.len());
+            let scratch = self.fallback_scratch.as_mut_slice();
+            let (scratch_n, _) = scratch.split_at_mut(n);
+            self.sine_generator.process(&[], scratch_n);
+            self.gain_processor.process(&[&*scratch_n], &mut output[..n]);
+            if output.len() > n {
+                output[n..].fill(0.0);
+            }
         }
     }
 

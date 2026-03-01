@@ -89,7 +89,7 @@ Goal: build useful nodes and make the engine interactive.
 - [ ] Implement `DelayLine` node — circular buffer, millisecond delay time
 - [ ] Write `DelayLine` impulse test
 - [ ] Implement `BiquadFilter` node — lowpass and highpass (Audio EQ Cookbook)
-- [ ] Implement `Mixer` node — N inputs, per-input gain
+- [x] Implement `Mixer` node — N inputs, per-input gain
 - [x] Build CLI with `clap` — stdin loop for real-time commands
 - [x] Support runtime parameter changes via stdin commands (gain, graph, quit, resume)
 
