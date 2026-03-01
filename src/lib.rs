@@ -5,6 +5,7 @@ pub mod audio_buffer;
 pub mod command;
 pub mod engine;
 pub mod event;
+pub mod graph;
 pub mod nodes;
 pub mod processor;
 pub mod ring_buffer;

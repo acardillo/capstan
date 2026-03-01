@@ -72,7 +72,7 @@ Goal: build the communication layer between control and audio threads.
 
 Goal: replace the hardcoded node chain with a real graph.
 
-- [ ] Define `NodeId` newtype
+- [x] Define `NodeId` newtype
 - [ ] Build `AudioGraph` — adjacency list + node storage, control thread only
 - [ ] Implement topological sort (Kahn's algorithm)
 - [ ] Define `CompiledGraph` — sorted node list + pre-allocated scratch buffers
