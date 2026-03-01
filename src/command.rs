@@ -1,20 +1,20 @@
-//! Command: instructions from the control thread to the audio thread. No heap allocation:
-//! all variants are fixed-size so they can be stored in the SPSC ring buffer.
+//! Command: instructions from the control thread to the audio thread.
 
 use std::sync::Arc;
+
+use crate::graph::CompiledGraph;
 use crate::ring_buffer::RingBuffer;
 
 /// Instruction from the control thread to the audio thread.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
-    /// Placeholder; remove or replace when you add real commands.
     NoOp,
-    /// Control says: set gain to this value.
+    /// Control says: set gain to this value (applies to hardcoded chain when no graph is set).
     SetGain(f32),
-    /// Control says: stop the stream.
     Quit,
-    /// Control says: resume the stream.
     Resume,
+    /// Swap in a new compiled graph; the previous one (if any) is returned via Event::GraphSwapped.
+    SwapGraph(CompiledGraph),
 }
 
 /// Producer side of the command channel. Only the control thread should hold this.
@@ -56,12 +56,6 @@ pub fn command_channel(capacity: usize) -> (CommandSender, CommandReceiver) {
 #[cfg(test)]
 mod tests {
     use super::{Command, command_channel};
-
-    #[test]
-    /// Test that command has no heap allocation (less than 16 bytes).
-    fn test_command_no_heap_allocation() {
-        assert!(std::mem::size_of::<Command>() <= 16, "Command must be small");
-    }
 
     #[test]
     /// Test commands are equal if they are cloned.

@@ -1,8 +1,24 @@
 //! Fixed-size audio buffer for real-time use. Allocated once, reused forever; no allocation after construction.
 
 /// Fixed-capacity buffer of f32 samples. Safe to use on the audio thread (no allocation, no locks).
+#[derive(Debug)]
 pub struct AudioBuffer {
     storage: Box<[f32]>,
+}
+
+impl PartialEq for AudioBuffer {
+    fn eq(&self, other: &Self) -> bool {
+        self.storage.len() == other.storage.len()
+            && self.storage.iter().zip(other.storage.iter()).all(|(a, b)| a == b)
+    }
+}
+
+impl Clone for AudioBuffer {
+    fn clone(&self) -> Self {
+        Self {
+            storage: self.storage.to_vec().into_boxed_slice(),
+        }
+    }
 }
 
 impl AudioBuffer {

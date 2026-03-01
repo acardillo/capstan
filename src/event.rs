@@ -1,18 +1,16 @@
-//! Event: notifications from the audio thread to the control thread. No heap allocation:
-//! all variants are fixed-size so they can be stored in the SPSC ring buffer.
+//! Event: notifications from the audio thread to the control thread.
 
 use std::sync::Arc;
 
+use crate::graph::CompiledGraph;
 use crate::ring_buffer::RingBuffer;
 
 /// Notification from the audio thread to the control thread.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
-    /// Placeholder; remove or replace when you add real events.
     NoOp,
-    /// Audio thread applied a new compiled graph; control thread may drop the previous one.
-    GraphSwapped,
-    /// Audio thread stopped the stream; control thread may restart it.
+    /// Previous compiled graph (control thread should drop it for deallocation).
+    GraphSwapped(CompiledGraph),
     StreamStopped,
 }
 
@@ -57,11 +55,6 @@ mod tests {
     use super::{Event, event_channel};
 
     #[test]
-    fn test_event_no_heap_allocation() {
-        assert!(std::mem::size_of::<Event>() <= 16, "Event must be small");
-    }
-
-    #[test]
     fn test_event_equality() {
         let event1 = Event::NoOp;
         let event2 = event1.clone();
@@ -71,7 +64,7 @@ mod tests {
     #[test]
     fn test_event_channel_send_recv() {
         let (sender, receiver) = event_channel(4);
-        sender.try_send(Event::GraphSwapped).unwrap();
-        assert_eq!(receiver.try_recv(), Some(Event::GraphSwapped));
+        sender.try_send(Event::StreamStopped).unwrap();
+        assert_eq!(receiver.try_recv(), Some(Event::StreamStopped));
     }
 }

@@ -4,6 +4,7 @@ use crate::processor::Processor;
 use std::f32::consts::PI;
 
 /// Generates a sine wave at the given frequency. Phase is carried across process() calls for continuity.
+#[derive(Clone, Debug, PartialEq)]
 pub struct SineGenerator {
     /// Frequency in Hz (e.g. 440.0).
     pub frequency_hz: f32,
@@ -35,6 +36,7 @@ impl Processor for SineGenerator {
 }
 
 /// Multiplies each sample by a gain factor. In-place: reads and writes the same buffer.
+#[derive(Clone, Debug, PartialEq)]
 pub struct GainProcessor {
     /// Linear gain (1.0 = unity, 0.0 = silence).
     pub gain: f32,

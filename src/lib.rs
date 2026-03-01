@@ -17,6 +17,7 @@ use crate::nodes::{GainProcessor, SineGenerator};
 use crate::processor::Processor;
 use crate::command::CommandReceiver;
 use crate::engine::Engine;
+use crate::event::EventSender;
 
 /// Opens the default output device and runs a stream that outputs silence.
 pub fn run_silent_output() {
@@ -84,11 +85,9 @@ pub fn run_tone() {
     std::thread::park();
 }
 
-/// Like `run_tone()`, but scaffolds the “drain commands at the top of the callback” pattern.
-///
-/// Note: the `cpal` callback must be `Send + 'static`, so any state captured by the closure must
-/// also be `Send`. This is why the channel handle types used here must remain `Send`.
-pub fn run_tone_with_command_drain(cmd_rx: CommandReceiver) {
+/// Like `run_tone()`, but drains commands and supports graph swap. Pass `evt_tx` so the
+/// control thread can receive `Event::GraphSwapped(prev)` when a new graph is applied.
+pub fn run_tone_with_command_drain(cmd_rx: CommandReceiver, evt_tx: EventSender) {
     let host = cpal::default_host();
     let device = host.default_output_device().expect("no output device available");
     let supported_config = device
@@ -112,7 +111,7 @@ pub fn run_tone_with_command_drain(cmd_rx: CommandReceiver) {
         .build_output_stream(
             &config,
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                engine.process_audio(&cmd_rx, data);
+                engine.process_audio(&cmd_rx, &evt_tx, data);
             },
             err_fn,
             None,

@@ -74,11 +74,11 @@ Goal: replace the hardcoded node chain with a real graph.
 
 - [x] Define `NodeId` newtype
 - [x] Build `AudioGraph` — adjacency list + node storage, control thread only
-- [ ] Implement topological sort (Kahn's algorithm)
-- [ ] Define `CompiledGraph` — sorted node list + pre-allocated scratch buffers
-- [ ] Implement atomic graph swap via `Arc<CompiledGraph>`
-- [ ] Return old graph to control thread via Event for deallocation
-- [ ] Execute compiled graph in audio callback
+- [x] Implement topological sort (Kahn's algorithm)
+- [x] Define `CompiledGraph` — sorted node list + pre-allocated scratch buffers
+- [x] Implement atomic graph swap via `Arc<CompiledGraph>` (by-value swap; old graph returned via Event)
+- [x] Return old graph to control thread via Event for deallocation
+- [x] Execute compiled graph in audio callback
 
 ---
 
