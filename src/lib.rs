@@ -85,9 +85,14 @@ pub fn run_tone() {
     std::thread::park();
 }
 
-/// Like `run_tone()`, but drains commands and supports graph swap. Pass `evt_tx` so the
-/// control thread can receive `Event::GraphSwapped(prev)` when a new graph is applied.
-pub fn run_tone_with_command_drain(cmd_rx: CommandReceiver, evt_tx: EventSender) {
+/// Like `run_tone()`, but drains commands and supports graph swap. Blocks until `shutdown`
+/// receives a message (then drops the stream and returns). Pass `evt_tx` so the control
+/// thread can receive `Event::GraphSwapped(prev)` when a new graph is applied.
+pub fn run_tone_with_command_drain(
+    cmd_rx: CommandReceiver,
+    evt_tx: EventSender,
+    shutdown: std::sync::mpsc::Receiver<()>,
+) {
     let host = cpal::default_host();
     let device = host.default_output_device().expect("no output device available");
     let supported_config = device
@@ -119,5 +124,5 @@ pub fn run_tone_with_command_drain(cmd_rx: CommandReceiver, evt_tx: EventSender)
         .expect("failed to build output stream");
 
     stream.play().expect("failed to start stream");
-    std::thread::park();
+    let _ = shutdown.recv();
 }
