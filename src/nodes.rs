@@ -100,6 +100,162 @@ impl Processor for Mixer {
     }
 }
 
+/// Delay line: one input, one output. Output is input delayed by `delay_ms` milliseconds.
+/// Uses a circular buffer; no allocation in process().
+#[derive(Clone, Debug, PartialEq)]
+pub struct DelayLine {
+    /// Circular buffer of past samples (length = max_delay_samples).
+    buffer: Vec<f32>,
+    /// Write position in the ring (next sample goes here).
+    write_pos: usize,
+    /// Delay in milliseconds.
+    pub delay_ms: f32,
+    /// Sample rate in Hz (for ms -> samples).
+    pub sample_rate: u32,
+}
+
+impl DelayLine {
+    /// Creates a delay line with room for up to `max_delay_ms` milliseconds.
+    pub fn new(max_delay_ms: f32, sample_rate: u32) -> Self {
+        let max_samples = (max_delay_ms / 1000.0 * sample_rate as f32).ceil().max(1.0) as usize;
+        DelayLine {
+            buffer: vec![0.0; max_samples],
+            write_pos: 0,
+            delay_ms: 0.0,
+            sample_rate,
+        }
+    }
+
+    /// Sets delay time in milliseconds (clamped to 0..max).
+    pub fn set_delay_ms(&mut self, delay_ms: f32) {
+        self.delay_ms = delay_ms.clamp(0.0, 1000.0 * self.buffer.len() as f32 / self.sample_rate as f32);
+    }
+
+    fn delay_samples(&self) -> usize {
+        let d = (self.delay_ms / 1000.0 * self.sample_rate as f32).round() as usize;
+        d.min(self.buffer.len())
+    }
+}
+
+impl Processor for DelayLine {
+    fn process(&mut self, inputs: &[&[f32]], output: &mut [f32]) {
+        let inp = match inputs.first() {
+            Some(s) => *s,
+            None => {
+                output.fill(0.0);
+                return;
+            }
+        };
+        let cap = self.buffer.len();
+        let delay = self.delay_samples();
+        let n = output.len().min(inp.len());
+        if delay == 0 {
+            for i in 0..n {
+                output[i] = inp[i];
+                self.buffer[self.write_pos] = inp[i];
+                self.write_pos = (self.write_pos + 1) % cap;
+            }
+            output[n..].fill(0.0);
+            return;
+        }
+        for i in 0..n {
+            let read_pos = (self.write_pos + cap - delay) % cap;
+            output[i] = self.buffer[read_pos];
+            self.buffer[self.write_pos] = inp[i];
+            self.write_pos = (self.write_pos + 1) % cap;
+        }
+        output[n..].fill(0.0);
+    }
+}
+
+/// Biquad filter (Direct Form I). Lowpass or highpass via Audio EQ Cookbook coefficients.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BiquadFilter {
+    b0: f32,
+    b1: f32,
+    b2: f32,
+    a1: f32,
+    a2: f32,
+    x1: f32,
+    x2: f32,
+    y1: f32,
+    y2: f32,
+    sample_rate: u32,
+}
+
+impl BiquadFilter {
+    /// Lowpass filter at cutoff Hz with Q (e.g. 0.5 = butterworth).
+    pub fn lowpass(sample_rate: u32, cutoff_hz: f32, q: f32) -> Self {
+        let (b0, b1, b2, a1, a2) = Self::lowpass_coeffs(sample_rate, cutoff_hz, q);
+        BiquadFilter {
+            b0, b1, b2, a1, a2,
+            x1: 0.0, x2: 0.0, y1: 0.0, y2: 0.0,
+            sample_rate,
+        }
+    }
+
+    /// Highpass filter at cutoff Hz with Q.
+    pub fn highpass(sample_rate: u32, cutoff_hz: f32, q: f32) -> Self {
+        let (b0, b1, b2, a1, a2) = Self::highpass_coeffs(sample_rate, cutoff_hz, q);
+        BiquadFilter {
+            b0, b1, b2, a1, a2,
+            x1: 0.0, x2: 0.0, y1: 0.0, y2: 0.0,
+            sample_rate,
+        }
+    }
+
+    fn lowpass_coeffs(sample_rate: u32, freq: f32, q: f32) -> (f32, f32, f32, f32, f32) {
+        let fs = sample_rate as f32;
+        let w0 = 2.0 * PI * freq / fs;
+        let cos_w0 = w0.cos();
+        let alpha = w0.sin() / (2.0 * q.max(0.001));
+        let a0 = 1.0 + alpha;
+        let b0 = (1.0 - cos_w0) / 2.0;
+        let b1 = 1.0 - cos_w0;
+        let b2 = (1.0 - cos_w0) / 2.0;
+        let a1 = -2.0 * cos_w0;
+        let a2 = 1.0 - alpha;
+        (b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0)
+    }
+
+    fn highpass_coeffs(sample_rate: u32, freq: f32, q: f32) -> (f32, f32, f32, f32, f32) {
+        let fs = sample_rate as f32;
+        let w0 = 2.0 * PI * freq / fs;
+        let cos_w0 = w0.cos();
+        let alpha = w0.sin() / (2.0 * q.max(0.001));
+        let a0 = 1.0 + alpha;
+        let b0 = (1.0 + cos_w0) / 2.0;
+        let b1 = -(1.0 + cos_w0);
+        let b2 = (1.0 + cos_w0) / 2.0;
+        let a1 = -2.0 * cos_w0;
+        let a2 = 1.0 - alpha;
+        (b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0)
+    }
+}
+
+impl Processor for BiquadFilter {
+    fn process(&mut self, inputs: &[&[f32]], output: &mut [f32]) {
+        let inp = match inputs.first() {
+            Some(s) => *s,
+            None => {
+                output.fill(0.0);
+                return;
+            }
+        };
+        let n = output.len().min(inp.len());
+        for i in 0..n {
+            let x = inp[i];
+            let y = self.b0 * x + self.b1 * self.x1 + self.b2 * self.x2 - self.a1 * self.y1 - self.a2 * self.y2;
+            self.x2 = self.x1;
+            self.x1 = x;
+            self.y2 = self.y1;
+            self.y1 = y;
+            output[i] = y;
+        }
+        output[n..].fill(0.0);
+    }
+}
+
 /// Source node that reads from the shared input buffer (filled by the input stream callback).
 /// Outputs the first channel of the latest block; silence on underrun.
 #[derive(Clone)]
@@ -203,5 +359,54 @@ mod tests {
             out.as_mut_slice(),
         );
         assert!(out.as_slice().iter().all(|&x| (x - 1.0).abs() < 1e-5));
+    }
+
+    #[test]
+    fn test_delay_line_impulse() {
+        use super::DelayLine;
+        let sr = 48_000u32;
+        let mut delay = DelayLine::new(10.0, sr);
+        delay.set_delay_ms(1.0); // 48 samples at 48kHz
+        let delay_samples = (1.0 / 1000.0 * sr as f32).round() as usize;
+        let mut input = vec![0.0f32; 128];
+        input[0] = 1.0; // impulse
+        let mut output = vec![0.0f32; 128];
+        delay.process(&[&input[..]], &mut output[..]);
+        assert_eq!(output[0], 0.0, "first sample should be pre-impulse buffer (zero)");
+        assert!((output[delay_samples] - 1.0).abs() < 1e-5, "impulse should appear at delay_samples");
+    }
+
+    #[test]
+    fn test_delay_line_zero_delay_passthrough() {
+        use super::DelayLine;
+        let mut delay = DelayLine::new(10.0, 48_000);
+        delay.set_delay_ms(0.0);
+        let input: Vec<f32> = (0..8).map(|i| i as f32).collect();
+        let mut output = vec![0.0f32; 8];
+        delay.process(&[&input[..]], &mut output[..]);
+        assert_eq!(&output[..8], &input[..]);
+    }
+
+    #[test]
+    fn test_biquad_lowpass_attenuates_highs() {
+        use super::BiquadFilter;
+        let mut lp = BiquadFilter::lowpass(48_000, 1000.0, 0.707);
+        let mut input = vec![0.0f32; 64];
+        input[0] = 1.0;
+        let mut output = vec![0.0f32; 64];
+        lp.process(&[&input[..]], &mut output[..]);
+        assert!(output[0].abs() > 0.0);
+        assert!(output[0].abs() <= 1.0);
+    }
+
+    #[test]
+    fn test_biquad_highpass_reduces_dc() {
+        use super::BiquadFilter;
+        let mut hp = BiquadFilter::highpass(48_000, 100.0, 0.707);
+        let input = vec![1.0f32; 256];
+        let mut output = vec![0.0f32; 256];
+        hp.process(&[&input[..]], &mut output[..]);
+        let max_out = output.iter().map(|x| x.abs()).fold(0.0f32, |a, b| a.max(b));
+        assert!(max_out < 1.0, "highpass should attenuate DC relative to input");
     }
 }

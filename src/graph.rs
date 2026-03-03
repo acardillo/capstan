@@ -3,7 +3,7 @@
 use std::collections::VecDeque;
 
 use crate::audio_buffer::AudioBuffer;
-use crate::nodes::{GainProcessor, InputNode, Mixer, SineGenerator};
+use crate::nodes::{BiquadFilter, DelayLine, GainProcessor, InputNode, Mixer, SineGenerator};
 use crate::processor::Processor;
 
 /// Identifies a node in the audio graph. Newtype so we don't confuse node indices with other integers.
@@ -29,6 +29,8 @@ pub enum GraphNode {
     Gain(GainProcessor),
     Mixer(Mixer),
     Input(InputNode),
+    Delay(DelayLine),
+    Biquad(BiquadFilter),
 }
 
 impl Processor for GraphNode {
@@ -38,6 +40,8 @@ impl Processor for GraphNode {
             GraphNode::Gain(g) => g.process(inputs, output),
             GraphNode::Mixer(m) => m.process(inputs, output),
             GraphNode::Input(n) => n.process(inputs, output),
+            GraphNode::Delay(d) => d.process(inputs, output),
+            GraphNode::Biquad(b) => b.process(inputs, output),
         }
     }
 }

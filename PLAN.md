@@ -86,23 +86,11 @@ Goal: replace the hardcoded node chain with a real graph.
 
 Goal: build useful nodes and make the engine interactive.
 
-- [ ] Implement `DelayLine` node — circular buffer, millisecond delay time
-- [ ] Write `DelayLine` impulse test
-- [ ] Implement `BiquadFilter` node — lowpass and highpass (Audio EQ Cookbook)
+- [x] Implement `DelayLine` node — circular buffer, millisecond delay time
+- [x] Write `DelayLine` impulse test
+- [x] Implement `BiquadFilter` node — lowpass and highpass (Audio EQ Cookbook)
 - [x] Implement `Mixer` node — N inputs, per-input gain
 - [x] Build CLI with `clap` — stdin loop for real-time commands
 - [x] Support runtime parameter changes via stdin commands (gain, graph, quit, resume)
-
----
-
-## Phase 5 — WASM (Optional)
-
-Goal: compile the engine to WebAssembly and run it in a browser.
-
-- [ ] Feature-flag `cpal` and native I/O behind `native` feature
-- [ ] Confirm core crate compiles to `wasm32-unknown-unknown`
-- [ ] Write JavaScript `AudioWorkletProcessor` wrapper
-- [ ] Expose `process_block(output_ptr, frames)` to JS
-- [ ] Build minimal HTML demo page — start button, gain slider
 
 ---
