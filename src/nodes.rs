@@ -1,7 +1,9 @@
-//! Audio nodes: sources (e.g. SineGenerator) and processors (e.g. GainProcessor).
+//! Audio nodes: sources (e.g. SineGenerator, InputNode) and processors (e.g. GainProcessor).
 
+use crate::input_buffer::InputSampleBuffer;
 use crate::processor::Processor;
 use std::f32::consts::PI;
+use std::sync::Arc;
 
 /// Generates a sine wave at the given frequency. Phase is carried across process() calls for continuity.
 #[derive(Clone, Debug, PartialEq)]
@@ -95,6 +97,37 @@ impl Processor for Mixer {
                 *sample += inp.get(i).copied().unwrap_or(0.0) * g;
             }
         }
+    }
+}
+
+/// Source node that reads from the shared input buffer (filled by the input stream callback).
+/// Outputs the first channel of the latest block; silence on underrun.
+#[derive(Clone)]
+pub struct InputNode {
+    pub buffer: Arc<InputSampleBuffer>,
+}
+
+impl InputNode {
+    pub fn new(buffer: Arc<InputSampleBuffer>) -> Self {
+        Self { buffer }
+    }
+}
+
+impl std::fmt::Debug for InputNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("InputNode(..)")
+    }
+}
+
+impl PartialEq for InputNode {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.buffer, &other.buffer)
+    }
+}
+
+impl Processor for InputNode {
+    fn process(&mut self, _inputs: &[&[f32]], output: &mut [f32]) {
+        self.buffer.read_block(output);
     }
 }
 

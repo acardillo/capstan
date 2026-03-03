@@ -3,7 +3,7 @@
 use std::collections::VecDeque;
 
 use crate::audio_buffer::AudioBuffer;
-use crate::nodes::{GainProcessor, Mixer, SineGenerator};
+use crate::nodes::{GainProcessor, InputNode, Mixer, SineGenerator};
 use crate::processor::Processor;
 
 /// Identifies a node in the audio graph. Newtype so we don't confuse node indices with other integers.
@@ -28,6 +28,7 @@ pub enum GraphNode {
     Sine(SineGenerator),
     Gain(GainProcessor),
     Mixer(Mixer),
+    Input(InputNode),
 }
 
 impl Processor for GraphNode {
@@ -36,6 +37,7 @@ impl Processor for GraphNode {
             GraphNode::Sine(s) => s.process(inputs, output),
             GraphNode::Gain(g) => g.process(inputs, output),
             GraphNode::Mixer(m) => m.process(inputs, output),
+            GraphNode::Input(n) => n.process(inputs, output),
         }
     }
 }
@@ -155,23 +157,31 @@ pub struct CompiledGraph {
 
 impl CompiledGraph {
     /// Runs the graph: each node reads from its input buffers and writes to its scratch; last node's buffer is copied to output.
+    /// Only processes `output.len()` frames per call so generator phase and timing stay in sync with the device.
     pub fn process(&mut self, output: &mut [f32]) {
-        let n = self.nodes.len();
-        if n == 0 {
+        let node_count = self.nodes.len();
+        if node_count == 0 {
             return;
         }
-        for i in 0..n {
+        let out_len = output
+            .len()
+            .min(self.scratch_buffers[0].len());
+        if out_len == 0 {
+            return;
+        }
+        for i in 0..node_count {
             let (head, tail) = self.scratch_buffers.split_at_mut(i);
             let out_buf = &mut tail[0];
             let input_slices: Vec<&[f32]> = self.input_buf_indices[i]
                 .iter()
-                .map(|&j| head[j].as_slice())
+                .map(|&j| &head[j].as_slice()[..out_len])
                 .collect();
-            self.nodes[i].process(&input_slices, out_buf.as_mut_slice());
+            self.nodes[i].process(&input_slices, &mut out_buf.as_mut_slice()[..out_len]);
         }
-        let last = self.scratch_buffers.len() - 1;
-        let len = self.scratch_buffers[last].len().min(output.len());
-        output[..len].copy_from_slice(self.scratch_buffers[last].as_slice());
+        output[..out_len].copy_from_slice(&self.scratch_buffers[node_count - 1].as_slice()[..out_len]);
+        if output.len() > out_len {
+            output[out_len..].fill(0.0);
+        }
     }
 }
 
@@ -265,5 +275,24 @@ mod tests {
         compiled.process(&mut output);
         let max_abs = output.iter().map(|s| s.abs()).fold(0.0f32, |a, b| a.max(b));
         assert!(max_abs > 0.0 && max_abs <= 1.1, "two sines mixed at 0.5 each => sum amplitude <= 1");
+    }
+
+    #[test]
+    fn test_compiled_graph_with_input() {
+        use crate::input_buffer::InputSampleBuffer;
+        use crate::nodes::InputNode;
+        use std::sync::Arc;
+        let buf = Arc::new(InputSampleBuffer::new(256));
+        let mut g = AudioGraph::new();
+        let inp = g.add_node(GraphNode::Input(InputNode::new(Arc::clone(&buf))));
+        let gain = g.add_node(GraphNode::Gain(GainProcessor::new(0.5)));
+        g.add_edge(inp, gain);
+        let mut compiled = g.compile(64).unwrap();
+        let mut output = vec![1.0f32; 64];
+        compiled.process(&mut output);
+        assert!(output.iter().all(|&s| s == 0.0), "input underrun => silence");
+        buf.write_block(&[0.5f32; 64], 1);
+        compiled.process(&mut output);
+        assert!(output.iter().all(|&s| (s - 0.25).abs() < 1e-5), "input 0.5 * gain 0.5 => 0.25");
     }
 }

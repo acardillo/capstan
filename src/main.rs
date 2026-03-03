@@ -1,12 +1,14 @@
 //! Capstan CLI — real-time graph updates via stdin.
 
 use std::io::{self, BufRead};
+use std::sync::Arc;
 use std::thread;
 
 use capstan::command::{command_channel, Command};
 use capstan::event::{event_channel, Event};
 use capstan::graph::{AudioGraph, CompiledGraph, GraphNode, NodeId};
-use capstan::nodes::{GainProcessor, Mixer, SineGenerator};
+use capstan::input_buffer::InputSampleBuffer;
+use capstan::nodes::{GainProcessor, InputNode, Mixer, SineGenerator};
 use capstan::run_tone_with_command_drain;
 use clap::Parser;
 
@@ -41,18 +43,32 @@ fn build_mixer_graph(freq1_hz: f32, freq2_hz: f32, gain1: f32, gain2: f32) -> Op
     g.compile(DEFAULT_FRAME_COUNT).ok()
 }
 
+/// Input (mic) → gain. Requires the shared input buffer (filled by the input stream).
+fn build_input_graph(
+    input_buffer: &Arc<InputSampleBuffer>,
+    gain: f32,
+) -> Option<CompiledGraph> {
+    let mut g = AudioGraph::new();
+    let inp = g.add_node(GraphNode::Input(InputNode::new(Arc::clone(input_buffer))));
+    let gid = g.add_node(GraphNode::Gain(GainProcessor::new(gain)));
+    g.add_edge(inp, gid);
+    g.compile(DEFAULT_FRAME_COUNT).ok()
+}
+
 fn main() {
     let cli = Cli::parse();
 
     let (cmd_tx, cmd_rx) = command_channel(cli.channel_capacity);
     let (evt_tx, evt_rx) = event_channel(cli.channel_capacity);
     let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel();
+    let input_buffer = Arc::new(InputSampleBuffer::new(2048));
+    let input_buffer_for_audio = Arc::clone(&input_buffer);
 
     let audio_handle = thread::spawn(move || {
-        run_tone_with_command_drain(cmd_rx, evt_tx, shutdown_rx);
+        run_tone_with_command_drain(cmd_rx, evt_tx, shutdown_rx, Some(input_buffer_for_audio));
     });
 
-    println!("Capstan — real-time audio. Commands: gain <0-1> | graph [freq] [gain] | graph mix [f1] [f2] [g1] [g2] | quit | resume | help");
+    println!("Capstan — real-time audio. Commands: gain <0-1> | graph [freq] [gain] | graph mix ... | graph input [gain] | quit | resume | help");
     let stdin = io::stdin();
     let mut lines = stdin.lock().lines();
 
@@ -126,6 +142,26 @@ fn main() {
                     println!("Usage: graph mix [freq1] [freq2] [gain1] [gain2]");
                 }
             }
+            ["graph", "input"] => {
+                if let Some(compiled) = build_input_graph(&input_buffer, 0.5) {
+                    let _ = cmd_tx.try_send(Command::SwapGraph(compiled));
+                    println!("Swapped input graph (mic → gain 0.5).");
+                } else {
+                    eprintln!("Failed to compile graph.");
+                }
+            }
+            ["graph", "input", gain] => {
+                if let Ok(g) = gain.parse::<f32>() {
+                    if let Some(compiled) = build_input_graph(&input_buffer, g) {
+                        let _ = cmd_tx.try_send(Command::SwapGraph(compiled));
+                        println!("Swapped input graph (mic → gain {}).", g);
+                    } else {
+                        eprintln!("Failed to compile graph.");
+                    }
+                } else {
+                    println!("Usage: graph input [gain]");
+                }
+            }
             ["graph", freq] => {
                 if let Ok(f) = freq.parse::<f32>() {
                     if let Some(compiled) = build_default_graph(f, 0.5) {
@@ -154,6 +190,7 @@ fn main() {
                 println!("  gain <n>  (g <n>)   Set gain 0–1 (hardcoded chain or last graph)");
                 println!("  graph [freq] [gain] Swap in default sine→gain graph (default 440, 0.5)");
                 println!("  graph mix [f1] [f2] [g1] [g2]  Two sines → mixer (default 440, 660, 0.5, 0.5)");
+                println!("  graph input [gain]  Mic → gain (default gain 0.5); starts input stream");
                 println!("  quit (q)             Stop engine and exit");
                 println!("  resume (r)           Resume after quit");
                 println!("  help (h)             This message");
