@@ -1,6 +1,6 @@
 //! Audio nodes: sources (e.g. SineGenerator, InputNode) and processors (e.g. GainProcessor).
 
-use crate::input_buffer::InputSampleBuffer;
+use crate::input_buffer::SampleSource;
 use crate::processor::Processor;
 use std::f32::consts::PI;
 use std::sync::Arc;
@@ -256,15 +256,14 @@ impl Processor for BiquadFilter {
     }
 }
 
-/// Source node that reads from the shared input buffer (filled by the input stream callback).
-/// Outputs the first channel of the latest block; silence on underrun.
+/// Source node that reads from a shared buffer (ring buffer for live input, or in-memory file for playback).
 #[derive(Clone)]
 pub struct InputNode {
-    pub buffer: Arc<InputSampleBuffer>,
+    pub buffer: Arc<dyn SampleSource + Send + Sync>,
 }
 
 impl InputNode {
-    pub fn new(buffer: Arc<InputSampleBuffer>) -> Self {
+    pub fn new(buffer: Arc<dyn SampleSource + Send + Sync>) -> Self {
         Self { buffer }
     }
 }
@@ -283,7 +282,7 @@ impl PartialEq for InputNode {
 
 impl Processor for InputNode {
     fn process(&mut self, _inputs: &[&[f32]], output: &mut [f32]) {
-        self.buffer.read_block(output);
+        let _ = self.buffer.read_block(output);
     }
 }
 

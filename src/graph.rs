@@ -1,8 +1,10 @@
 //! Graph types: node identity, AudioGraph (control-thread), and CompiledGraph.
 
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 use crate::audio_buffer::AudioBuffer;
+use crate::meter::MeterBuffer;
 use crate::nodes::{BiquadFilter, DelayLine, GainProcessor, InputNode, Mixer, SineGenerator};
 use crate::processor::Processor;
 
@@ -128,8 +130,30 @@ impl AudioGraph {
 
     /// Builds a CompiledGraph: topo-sorted nodes, one scratch buffer per node, and input indices per node.
     pub fn compile(&self, frame_count: usize) -> Result<CompiledGraph, ()> {
+        self.compile_with_meter(frame_count, None)
+    }
+
+    /// Like [`compile`](Self::compile), but optionally wires meter taps: after each process call,
+    /// the peak level of each specified scratch buffer (by index in topo order) is written to the
+    /// shared [`MeterBuffer`]. Use for live level meters in a UI. `tap_indices` must have the same
+    /// length as `meter_buffer.len()`, and each index must be in range `0..node_count`.
+    pub fn compile_with_meter(
+        &self,
+        frame_count: usize,
+        meter: Option<(Vec<usize>, Arc<MeterBuffer>)>,
+    ) -> Result<CompiledGraph, ()> {
         let order = self.topological_sort()?;
         let n = order.len();
+        if let Some((ref tap_indices, ref buf)) = meter {
+            if tap_indices.len() != buf.len() {
+                return Err(());
+            }
+            for &idx in tap_indices {
+                if idx >= n {
+                    return Err(());
+                }
+            }
+        }
         let nodes: Vec<GraphNode> = order
             .iter()
             .map(|&id| self.nodes[id.as_usize()].clone())
@@ -142,21 +166,50 @@ impl AudioGraph {
                     .collect()
             })
             .collect();
+        let (tap_indices, meter_buffer) = meter
+            .map(|(taps, buf)| (Some(taps), Some(buf)))
+            .unwrap_or((None, None));
         Ok(CompiledGraph {
             nodes,
             scratch_buffers,
             input_buf_indices,
+            tap_indices,
+            meter_buffer,
         })
     }
 }
 
 /// Immutable execution plan: nodes in topo order, one scratch buffer per node, and per-node input indices.
-#[derive(Clone, Debug, PartialEq)]
+/// Optionally holds meter taps: scratch buffer indices whose peak level is written to [`MeterBuffer`] each callback.
+#[derive(Clone)]
 pub struct CompiledGraph {
     nodes: Vec<GraphNode>,
     scratch_buffers: Vec<AudioBuffer>,
     /// input_buf_indices[i] = buffer indices (0..i) that are inputs to node i.
     input_buf_indices: Vec<Vec<usize>>,
+    tap_indices: Option<Vec<usize>>,
+    meter_buffer: Option<Arc<MeterBuffer>>,
+}
+
+impl std::fmt::Debug for CompiledGraph {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompiledGraph")
+            .field("node_count", &self.nodes.len())
+            .field("tap_indices", &self.tap_indices)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for CompiledGraph {
+    fn eq(&self, other: &Self) -> bool {
+        self.nodes.len() == other.nodes.len()
+            && self.tap_indices == other.tap_indices
+            && match (&self.meter_buffer, &other.meter_buffer) {
+                (None, None) => true,
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                _ => false,
+            }
+    }
 }
 
 impl CompiledGraph {
@@ -185,6 +238,20 @@ impl CompiledGraph {
         output[..out_len].copy_from_slice(&self.scratch_buffers[node_count - 1].as_slice()[..out_len]);
         if output.len() > out_len {
             output[out_len..].fill(0.0);
+        }
+
+        if let (Some(ref tap_indices), Some(ref meter_buffer)) = (&self.tap_indices, &self.meter_buffer) {
+            for (slot, &scratch_idx) in tap_indices.iter().enumerate() {
+                if scratch_idx < self.scratch_buffers.len() {
+                    let buf = &self.scratch_buffers[scratch_idx];
+                    let slice = &buf.as_slice()[..out_len];
+                    let peak = slice
+                        .iter()
+                        .map(|&s| s.abs())
+                        .fold(0.0f32, |a, b| a.max(b));
+                    meter_buffer.write_peak(slot, peak);
+                }
+            }
         }
     }
 }
@@ -283,12 +350,13 @@ mod tests {
 
     #[test]
     fn test_compiled_graph_with_input() {
-        use crate::input_buffer::InputSampleBuffer;
+        use crate::input_buffer::{InputSampleBuffer, SampleSource};
         use crate::nodes::InputNode;
         use std::sync::Arc;
         let buf = Arc::new(InputSampleBuffer::new(256));
+        let buf_dyn: Arc<dyn SampleSource + Send + Sync> = Arc::clone(&buf) as _;
         let mut g = AudioGraph::new();
-        let inp = g.add_node(GraphNode::Input(InputNode::new(Arc::clone(&buf))));
+        let inp = g.add_node(GraphNode::Input(InputNode::new(buf_dyn)));
         let gain = g.add_node(GraphNode::Gain(GainProcessor::new(0.5)));
         g.add_edge(inp, gain);
         let mut compiled = g.compile(64).unwrap();
@@ -298,5 +366,25 @@ mod tests {
         buf.write_block(&[0.5f32; 64], 1);
         compiled.process(&mut output);
         assert!(output.iter().all(|&s| (s - 0.25).abs() < 1e-5), "input 0.5 * gain 0.5 => 0.25");
+    }
+
+    #[test]
+    fn test_compiled_graph_with_meter_taps() {
+        use crate::meter::MeterBuffer;
+        use std::sync::Arc;
+        let mut g = AudioGraph::new();
+        g.add_node(GraphNode::Sine(SineGenerator::new(440.0, 48_000)));
+        g.add_node(GraphNode::Gain(GainProcessor::new(0.1)));
+        g.add_edge(NodeId::new(0), NodeId::new(1));
+        let meter = Arc::new(MeterBuffer::new(1));
+        let tap_indices = vec![1];
+        let mut compiled = g
+            .compile_with_meter(64, Some((tap_indices, Arc::clone(&meter))))
+            .unwrap();
+        let mut output = vec![0.0f32; 64];
+        compiled.process(&mut output);
+        let peaks = meter.read_peaks();
+        assert_eq!(peaks.len(), 1);
+        assert!(peaks[0] > 0.0 && peaks[0] <= 0.11, "tap 1 = gain output, peak ~0.1");
     }
 }

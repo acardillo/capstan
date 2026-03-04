@@ -6,3 +6,5 @@ edition = "2021"
 [dependencies]
 clap = { version = "4.4", features = ["derive", "std"] }
 cpal = "0.17"
+crossterm = "0.28"
+hound = "3.5"

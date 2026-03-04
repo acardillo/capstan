@@ -12,6 +12,8 @@ pub enum Event {
     /// Previous compiled graph (control thread should drop it for deallocation).
     GraphSwapped(CompiledGraph),
     StreamStopped,
+    /// Output stream is starting; use this sample rate for file feeders and graph (Hz).
+    StreamStarted(u32),
 }
 
 /// Producer side of the event channel. Only the audio thread should hold this.

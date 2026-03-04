@@ -17,10 +17,13 @@
 
 pub mod audio_buffer;
 pub mod command;
+pub mod device;
+pub mod file_feeder;
 pub mod input_buffer;
 pub mod engine;
 pub mod event;
 pub mod graph;
+pub mod meter;
 pub mod nodes;
 pub mod processor;
 pub mod ring_buffer;
@@ -57,6 +60,17 @@ pub fn interleave_mono_to_stereo(mono: &[f32], data: &mut [f32], channels: u16) 
             data[i * ch + c] = s;
         }
     }
+}
+
+/// Returns the sample rate (Hz) that [`run_audio`] will use for the default output device,
+/// or `None` if no device/config is available. Use this when starting file feeders or
+/// building graphs so playback matches the actual output rate.
+pub fn default_output_sample_rate() -> Option<u32> {
+    let host = cpal::default_host();
+    let device = host.default_output_device()?;
+    let supported = device.default_output_config().ok()?;
+    let config = stream_config_with_low_latency(&supported);
+    Some(config.sample_rate)
 }
 
 /// Builds a `StreamConfig` from the device default and sets a low-latency buffer size when the
@@ -103,6 +117,7 @@ pub fn run_audio(
     let sample_format = supported_config.sample_format();
     let config = stream_config_with_low_latency(&supported_config);
     let sample_rate = config.sample_rate;
+    let _ = evt_tx.try_send(crate::event::Event::StreamStarted(sample_rate));
 
     if sample_format != SampleFormat::F32 {
         panic!(

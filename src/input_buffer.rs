@@ -1,7 +1,16 @@
 //! Lock-free sample ring for passing input audio to the output callback. Input writes
 //! (first channel only); output reads exactly the samples it needs. Pre-allocated, real-time safe.
+//!
+//! For file playback without a feeder thread, use [`FilePlaybackBuffer`] (pull-based from in-memory buffer).
 
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+
+/// Shared interface for sources the output callback can read from (ring buffer or in-memory file).
+pub trait SampleSource: Send + Sync {
+    /// Reads up to `out.len()` samples into `out`; rest is zeroed. Returns number of samples read.
+    fn read_block(&self, out: &mut [f32]) -> usize;
+}
 
 /// Lock-free SPSC ring of f32 samples (mono, first channel of input). Input callback
 /// writes with write_block(); output callback reads with read_block() — reads exactly
@@ -15,6 +24,12 @@ pub struct InputSampleBuffer {
 
 unsafe impl Send for InputSampleBuffer {}
 unsafe impl Sync for InputSampleBuffer {}
+
+impl SampleSource for InputSampleBuffer {
+    fn read_block(&self, out: &mut [f32]) -> usize {
+        InputSampleBuffer::read_block(self, out)
+    }
+}
 
 impl InputSampleBuffer {
     /// Capacity in samples (mono). Should be large enough for input/output size mismatch (e.g. 4096).
@@ -70,6 +85,49 @@ impl InputSampleBuffer {
         }
         out[n..].fill(0.0);
         self.read_pos.store(read.wrapping_add(n), Ordering::Release);
+        n
+    }
+}
+
+/// Pull-based file playback: whole file in memory, callback reads via atomic position.
+/// No feeder thread — eliminates timing/overflow crackle. Loops at end of file.
+pub struct FilePlaybackBuffer {
+    samples: Arc<Vec<f32>>,
+    position: AtomicUsize,
+}
+
+unsafe impl Send for FilePlaybackBuffer {}
+unsafe impl Sync for FilePlaybackBuffer {}
+
+impl FilePlaybackBuffer {
+    /// Creates a buffer that will be read from the start. `samples` must be at output sample rate.
+    pub fn new(samples: Arc<Vec<f32>>) -> Self {
+        FilePlaybackBuffer {
+            samples,
+            position: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl SampleSource for FilePlaybackBuffer {
+    fn read_block(&self, out: &mut [f32]) -> usize {
+        let len = self.samples.len();
+        if len == 0 {
+            out.fill(0.0);
+            return 0;
+        }
+        let pos = self.position.load(Ordering::Relaxed);
+        let n = out.len().min(len);
+        let start = pos % len;
+        if start + n <= len {
+            out[..n].copy_from_slice(&self.samples[start..start + n]);
+        } else {
+            let first = len - start;
+            out[..first].copy_from_slice(&self.samples[start..]);
+            out[first..n].copy_from_slice(&self.samples[..n - first]);
+        }
+        out[n..].fill(0.0);
+        self.position.store(pos + n, Ordering::Release);
         n
     }
 }
