@@ -1,34 +1,25 @@
-//! Engine: runs a compiled graph or a hardcoded chain on the audio thread,
+//! Engine: runs a compiled graph on the audio thread,
 //! draining commands at the top of each callback.
 
-use crate::audio_buffer::AudioBuffer;
 use crate::command::{Command, CommandReceiver};
 use crate::event::{Event, EventSender};
 use crate::graph::CompiledGraph;
-use crate::nodes::{GainProcessor, SineGenerator};
-use crate::processor::Processor;
+use crate::nodes::GainProcessor;
 
-/// Max frames for fallback chain scratch (no allocation in callback).
-const FALLBACK_SCRATCH_FRAMES: usize = 4096;
-
-/// Engine state: optional compiled graph (when set, it is run); otherwise hardcoded sine→gain chain.
+/// Engine state: optional compiled graph (when set, it is run); otherwise silence.
+/// SetGain updates a stored gain (for future use, e.g. master gain).
 pub struct Engine {
-    sine_generator: SineGenerator,
     gain_processor: GainProcessor,
     should_quit: bool,
     current_graph: Option<CompiledGraph>,
-    /// Scratch for fallback chain so gain has a separate input buffer.
-    fallback_scratch: AudioBuffer,
 }
 
 impl Engine {
-    pub fn new(sample_rate: u32, frequency_hz: f32, initial_gain: f32) -> Self {
+    pub fn new(_sample_rate: u32, _frequency_hz: f32, initial_gain: f32) -> Self {
         Engine {
-            sine_generator: SineGenerator::new(frequency_hz, sample_rate),
             gain_processor: GainProcessor::new(initial_gain),
             should_quit: false,
             current_graph: None,
-            fallback_scratch: AudioBuffer::new(FALLBACK_SCRATCH_FRAMES),
         }
     }
 

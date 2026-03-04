@@ -1,4 +1,6 @@
-//! Capstan CLI — real-time graph updates via stdin.
+//! Example: CLI-based DAW — real-time patch graph, transport, and gain from the command line.
+//!
+//! Run with: `cargo run --example cli_daw`
 
 use std::io::{self, BufRead};
 use std::sync::Arc;
@@ -9,15 +11,15 @@ use capstan::event::{event_channel, Event};
 use capstan::graph::{AudioGraph, CompiledGraph, GraphNode, NodeId};
 use capstan::input_buffer::InputSampleBuffer;
 use capstan::nodes::{BiquadFilter, DelayLine, GainProcessor, InputNode, Mixer, SineGenerator};
-use capstan::run_tone_with_command_drain;
+use capstan::run_audio;
 use clap::Parser;
 
 const DEFAULT_SAMPLE_RATE: u32 = 48_000;
 const DEFAULT_FRAME_COUNT: usize = 512;
 
 #[derive(Parser, Debug)]
-#[command(name = "capstan")]
-#[command(about = "Real-time audio engine. Type commands and press Enter.")]
+#[command(name = "capstan-cli-daw")]
+#[command(about = "Capstan CLI DAW — Real-time audio: patch graph, transport, and gain from the command line.")]
 struct Cli {
     /// Buffer size for command/event channels
     #[arg(long, default_value = "1024")]
@@ -94,6 +96,26 @@ fn build_biquad_graph(
     g.compile(DEFAULT_FRAME_COUNT).ok()
 }
 
+fn print_help() {
+    println!("  Transport");
+    println!("    quit (q)    Stop and exit");
+    println!("    resume (r)  Resume after quit");
+    println!();
+    println!("  Patch — load a signal graph");
+    println!("    graph [freq] [gain]           Default sine→gain (440, 0.5)");
+    println!("    graph mix [f1] [f2] [g1] [g2] Two sines → mixer");
+    println!("    graph input [gain]            Mic → gain");
+    println!("    graph delay [delay_ms] [gain]  Input → delay → gain");
+    println!("    graph biquad lp|hp [cutoff] [q] [gain]  Sine → lowpass/highpass → gain");
+    println!();
+    println!("  Level");
+    println!("    gain <n> (g <n>)  Set gain 0–1");
+    println!();
+    println!("  Session");
+    println!("    status (s)  Show current patch and gain");
+    println!("    help (h)    This message");
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -104,10 +126,13 @@ fn main() {
     let input_buffer_for_audio = Arc::clone(&input_buffer);
 
     let audio_handle = thread::spawn(move || {
-        run_tone_with_command_drain(cmd_rx, evt_tx, shutdown_rx, Some(input_buffer_for_audio));
+        run_audio(cmd_rx, evt_tx, shutdown_rx, Some(input_buffer_for_audio));
     });
 
-    println!("Capstan — real-time audio. Commands: gain | graph [freq] [gain] | graph mix | graph input | graph delay | graph biquad lp|hp ... | quit | resume | help");
+    let mut current_patch: Option<String> = None;
+    let mut current_gain: f32 = 0.5;
+
+    println!("Capstan CLI DAW — type a command and press Enter. 'help' for commands.");
     let stdin = io::stdin();
     let mut lines = stdin.lock().lines();
 
@@ -128,8 +153,13 @@ fn main() {
                 let _ = cmd_tx.try_send(Command::Resume);
                 println!("Resumed.");
             }
+            ["status" | "s"] => {
+                let patch = current_patch.as_deref().unwrap_or("(none)");
+                println!("patch: {}, gain: {}", patch, current_gain);
+            }
             ["gain", v] | ["g", v] => {
                 if let Ok(g) = v.parse::<f32>() {
+                    current_gain = g;
                     let _ = cmd_tx.try_send(Command::SetGain(g));
                     println!("Gain set to {}.", g);
                 } else {
@@ -139,6 +169,7 @@ fn main() {
             ["graph"] => {
                 if let Some(compiled) = build_default_graph(440.0, 0.5) {
                     let _ = cmd_tx.try_send(Command::SwapGraph(compiled));
+                    current_patch = Some("sine".to_string());
                     println!("Swapped default graph (440 Hz sine → gain 0.5).");
                 } else {
                     eprintln!("Failed to compile graph.");
@@ -147,6 +178,7 @@ fn main() {
             ["graph", "mix"] => {
                 if let Some(compiled) = build_mixer_graph(440.0, 660.0, 0.5, 0.5) {
                     let _ = cmd_tx.try_send(Command::SwapGraph(compiled));
+                    current_patch = Some("mix".to_string());
                     println!("Swapped mixer graph (440 Hz + 660 Hz → mixer 0.5, 0.5).");
                 } else {
                     eprintln!("Failed to compile graph.");
@@ -156,6 +188,7 @@ fn main() {
                 if let (Ok(a), Ok(b)) = (f1.parse::<f32>(), f2.parse::<f32>()) {
                     if let Some(compiled) = build_mixer_graph(a, b, 0.5, 0.5) {
                         let _ = cmd_tx.try_send(Command::SwapGraph(compiled));
+                        current_patch = Some("mix".to_string());
                         println!("Swapped mixer graph ({} Hz + {} Hz → mixer 0.5, 0.5).", a, b);
                     } else {
                         eprintln!("Failed to compile graph.");
@@ -173,6 +206,7 @@ fn main() {
                 ) {
                     if let Some(compiled) = build_mixer_graph(a, b, ga, gb) {
                         let _ = cmd_tx.try_send(Command::SwapGraph(compiled));
+                        current_patch = Some("mix".to_string());
                         println!("Swapped mixer graph ({} Hz + {} Hz → mixer {}, {}).", a, b, ga, gb);
                     } else {
                         eprintln!("Failed to compile graph.");
@@ -184,6 +218,7 @@ fn main() {
             ["graph", "input"] => {
                 if let Some(compiled) = build_input_graph(&input_buffer, 0.5) {
                     let _ = cmd_tx.try_send(Command::SwapGraph(compiled));
+                    current_patch = Some("input".to_string());
                     println!("Swapped input graph (mic → gain 0.5).");
                 } else {
                     eprintln!("Failed to compile graph.");
@@ -193,6 +228,7 @@ fn main() {
                 if let Ok(g) = gain.parse::<f32>() {
                     if let Some(compiled) = build_input_graph(&input_buffer, g) {
                         let _ = cmd_tx.try_send(Command::SwapGraph(compiled));
+                        current_patch = Some("input".to_string());
                         println!("Swapped input graph (mic → gain {}).", g);
                     } else {
                         eprintln!("Failed to compile graph.");
@@ -204,6 +240,7 @@ fn main() {
             ["graph", "delay"] => {
                 if let Some(compiled) = build_delay_graph(&input_buffer, 100.0, 0.5) {
                     let _ = cmd_tx.try_send(Command::SwapGraph(compiled));
+                    current_patch = Some("delay".to_string());
                     println!("Swapped delay graph (input → delay 100 ms → gain 0.5).");
                 } else {
                     eprintln!("Failed to compile graph.");
@@ -213,6 +250,7 @@ fn main() {
                 if let Ok(d) = ms.parse::<f32>() {
                     if let Some(compiled) = build_delay_graph(&input_buffer, d, 0.5) {
                         let _ = cmd_tx.try_send(Command::SwapGraph(compiled));
+                        current_patch = Some("delay".to_string());
                         println!("Swapped delay graph (input → delay {} ms → gain 0.5).", d);
                     } else {
                         eprintln!("Failed to compile graph.");
@@ -225,6 +263,7 @@ fn main() {
                 if let (Ok(d), Ok(g)) = (ms.parse::<f32>(), gain.parse::<f32>()) {
                     if let Some(compiled) = build_delay_graph(&input_buffer, d, g) {
                         let _ = cmd_tx.try_send(Command::SwapGraph(compiled));
+                        current_patch = Some("delay".to_string());
                         println!("Swapped delay graph (input → delay {} ms → gain {}).", d, g);
                     } else {
                         eprintln!("Failed to compile graph.");
@@ -236,6 +275,7 @@ fn main() {
             ["graph", "biquad", "lp"] | ["graph", "biquad", "lowpass"] => {
                 if let Some(compiled) = build_biquad_graph(440.0, true, 1000.0, 0.707, 0.5) {
                     let _ = cmd_tx.try_send(Command::SwapGraph(compiled));
+                    current_patch = Some("biquad-lp".to_string());
                     println!("Swapped biquad graph (440 Hz → lowpass 1 kHz Q 0.707 → gain 0.5).");
                 } else {
                     eprintln!("Failed to compile graph.");
@@ -245,6 +285,7 @@ fn main() {
                 if let Ok(c) = cutoff.parse::<f32>() {
                     if let Some(compiled) = build_biquad_graph(440.0, true, c, 0.707, 0.5) {
                         let _ = cmd_tx.try_send(Command::SwapGraph(compiled));
+                        current_patch = Some("biquad-lp".to_string());
                         println!("Swapped biquad graph (440 Hz → lowpass {} Hz → gain 0.5).", c);
                     } else {
                         eprintln!("Failed to compile graph.");
@@ -257,6 +298,7 @@ fn main() {
                 if let (Ok(c), Ok(qv)) = (cutoff.parse::<f32>(), q.parse::<f32>()) {
                     if let Some(compiled) = build_biquad_graph(440.0, true, c, qv, 0.5) {
                         let _ = cmd_tx.try_send(Command::SwapGraph(compiled));
+                        current_patch = Some("biquad-lp".to_string());
                         println!("Swapped biquad graph (440 Hz → lowpass {} Hz Q {} → gain 0.5).", c, qv);
                     } else {
                         eprintln!("Failed to compile graph.");
@@ -269,6 +311,7 @@ fn main() {
                 if let (Ok(c), Ok(qv), Ok(g)) = (cutoff.parse::<f32>(), q.parse::<f32>(), gain.parse::<f32>()) {
                     if let Some(compiled) = build_biquad_graph(440.0, true, c, qv, g) {
                         let _ = cmd_tx.try_send(Command::SwapGraph(compiled));
+                        current_patch = Some("biquad-lp".to_string());
                         println!("Swapped biquad graph (440 Hz → lowpass {} Hz Q {} → gain {}).", c, qv, g);
                     } else {
                         eprintln!("Failed to compile graph.");
@@ -280,6 +323,7 @@ fn main() {
             ["graph", "biquad", "hp"] | ["graph", "biquad", "highpass"] => {
                 if let Some(compiled) = build_biquad_graph(440.0, false, 500.0, 0.707, 0.5) {
                     let _ = cmd_tx.try_send(Command::SwapGraph(compiled));
+                    current_patch = Some("biquad-hp".to_string());
                     println!("Swapped biquad graph (440 Hz → highpass 500 Hz Q 0.707 → gain 0.5).");
                 } else {
                     eprintln!("Failed to compile graph.");
@@ -289,6 +333,7 @@ fn main() {
                 if let Ok(c) = cutoff.parse::<f32>() {
                     if let Some(compiled) = build_biquad_graph(440.0, false, c, 0.707, 0.5) {
                         let _ = cmd_tx.try_send(Command::SwapGraph(compiled));
+                        current_patch = Some("biquad-hp".to_string());
                         println!("Swapped biquad graph (440 Hz → highpass {} Hz → gain 0.5).", c);
                     } else {
                         eprintln!("Failed to compile graph.");
@@ -301,6 +346,7 @@ fn main() {
                 if let (Ok(c), Ok(qv)) = (cutoff.parse::<f32>(), q.parse::<f32>()) {
                     if let Some(compiled) = build_biquad_graph(440.0, false, c, qv, 0.5) {
                         let _ = cmd_tx.try_send(Command::SwapGraph(compiled));
+                        current_patch = Some("biquad-hp".to_string());
                         println!("Swapped biquad graph (440 Hz → highpass {} Hz Q {} → gain 0.5).", c, qv);
                     } else {
                         eprintln!("Failed to compile graph.");
@@ -313,6 +359,7 @@ fn main() {
                 if let (Ok(c), Ok(qv), Ok(g)) = (cutoff.parse::<f32>(), q.parse::<f32>(), gain.parse::<f32>()) {
                     if let Some(compiled) = build_biquad_graph(440.0, false, c, qv, g) {
                         let _ = cmd_tx.try_send(Command::SwapGraph(compiled));
+                        current_patch = Some("biquad-hp".to_string());
                         println!("Swapped biquad graph (440 Hz → highpass {} Hz Q {} → gain {}).", c, qv, g);
                     } else {
                         eprintln!("Failed to compile graph.");
@@ -325,6 +372,7 @@ fn main() {
                 if let Ok(f) = freq.parse::<f32>() {
                     if let Some(compiled) = build_default_graph(f, 0.5) {
                         let _ = cmd_tx.try_send(Command::SwapGraph(compiled));
+                        current_patch = Some("sine".to_string());
                         println!("Swapped graph ({} Hz sine → gain 0.5).", f);
                     } else {
                         eprintln!("Failed to compile graph.");
@@ -337,6 +385,8 @@ fn main() {
                 if let (Ok(f), Ok(g)) = (freq.parse::<f32>(), gain.parse::<f32>()) {
                     if let Some(compiled) = build_default_graph(f, g) {
                         let _ = cmd_tx.try_send(Command::SwapGraph(compiled));
+                        current_patch = Some("sine".to_string());
+                        current_gain = g;
                         println!("Swapped graph ({} Hz sine → gain {}).", f, g);
                     } else {
                         eprintln!("Failed to compile graph.");
@@ -345,17 +395,7 @@ fn main() {
                     println!("Usage: graph [freq] [gain]");
                 }
             }
-            ["help" | "h" | "?"] => {
-                println!("  gain <n>  (g <n>)   Set gain 0–1");
-                println!("  graph [freq] [gain] Default sine→gain (440, 0.5)");
-                println!("  graph mix [f1] [f2] [g1] [g2]  Two sines → mixer");
-                println!("  graph input [gain]  Mic → gain");
-                println!("  graph delay [delay_ms] [gain]  Input → delay → gain (default 100 ms, 0.5)");
-                println!("  graph biquad lp|hp [cutoff_hz] [q] [gain]  Sine → lowpass/highpass → gain");
-                println!("  quit (q)             Stop and exit");
-                println!("  resume (r)           Resume after quit");
-                println!("  help (h)             This message");
-            }
+            ["help" | "h" | "?"] => print_help(),
             _ => {
                 println!("Unknown command. Type 'help' for commands.");
             }
