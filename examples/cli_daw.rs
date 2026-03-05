@@ -95,12 +95,18 @@ fn build_session_graph(
     meter_buffer: Option<Arc<MeterBuffer>>,
     sample_rate: u32,
 ) -> Option<CompiledGraph> {
+    use std::iter::once;
     let mut g = AudioGraph::new();
     if tracks.is_empty() {
         let inp = g.add_node(GraphNode::Input(InputNode::new(Arc::clone(silent_buffer))));
-        let out = g.add_node(GraphNode::Gain(GainProcessor::new(0.0)));
+        let out = g.add_node(GraphNode::Gain(GainProcessor::new(master_gain)));
         g.add_edge(inp, out);
-        return g.compile(DEFAULT_FRAME_COUNT).ok();
+        return match &meter_buffer {
+            Some(mb) if mb.len() == 1 => {
+                g.compile_with_meter(DEFAULT_FRAME_COUNT, Some((vec![1], Arc::clone(mb)))).ok()
+            }
+            _ => g.compile(DEFAULT_FRAME_COUNT).ok(),
+        };
     }
 
     let mut gain_node_ids = Vec::with_capacity(tracks.len());
@@ -132,10 +138,11 @@ fn build_session_graph(
     let master = g.add_node(GraphNode::Gain(GainProcessor::new(master_gain)));
     g.add_edge(mix, master);
 
+    let n = tracks.len();
+    // Node order: sources 0..n, gains n..2n, mixer 2n, master 2n+1. Tap track gains + master.
     let compiled = match &meter_buffer {
-        Some(mb) if mb.len() == tracks.len() => {
-            let n = tracks.len();
-            let tap_indices: Vec<usize> = (0..n).map(|i| n + i).collect();
+        Some(mb) if mb.len() == n + 1 => {
+            let tap_indices: Vec<usize> = (0..n).map(|i| n + i).chain(once(2 * n + 1)).collect();
             g.compile_with_meter(DEFAULT_FRAME_COUNT, Some((tap_indices, Arc::clone(mb)))).ok()
         }
         _ => g.compile(DEFAULT_FRAME_COUNT).ok(),
@@ -181,42 +188,47 @@ fn ascii_meter_with_db(peak: f32) -> String {
     format!("[{}] {:>6.1} dB", bar, db)
 }
 
-/// Prompt row is directly under the tracks: table header + track rows.
+/// Prompt row is directly under the tracks: table header + track rows + master row.
 fn prompt_row(tracks: &[Track]) -> u16 {
-    (1 + tracks.len().max(1)).min(200) as u16
+    (2 + tracks.len()).min(200) as u16
 }
 
 fn draw_header(
     stdout: &mut impl Write,
     tracks: &[Track],
     peaks: &[f32],
+    master_gain: f32,
     prompt_row: u16,
 ) -> std::io::Result<()> {
     let mut line = 0u16;
-    if tracks.is_empty() {
-        execute!(stdout, MoveTo(0, 0), Clear(ClearType::CurrentLine))?;
-        writeln!(stdout, " tracks: (none)")?;
+    execute!(stdout, MoveTo(0, 0), Clear(ClearType::CurrentLine))?;
+    writeln!(stdout, " track | source     | gain  | level")?;
+    line += 1;
+    for (i, track) in tracks.iter().enumerate() {
+        let src = source_display(&track.source);
+        let peak = peaks.get(i).copied().unwrap_or(0.0);
+        execute!(stdout, MoveTo(0, line), Clear(ClearType::CurrentLine))?;
+        writeln!(
+            stdout,
+            "   {}   | {:>10} | {:.2}  | {}",
+            i + 1,
+            src,
+            track.gain,
+            ascii_meter_with_db(peak)
+        )?;
         line += 1;
-    } else {
-        execute!(stdout, MoveTo(0, 0), Clear(ClearType::CurrentLine))?;
-        writeln!(stdout, " track | source     | gain  | level")?;
-        line += 1;
-        for (i, track) in tracks.iter().enumerate() {
-            let src = source_display(&track.source);
-            let peak = peaks.get(i).copied().unwrap_or(0.0);
-            execute!(stdout, MoveTo(0, line), Clear(ClearType::CurrentLine))?;
-            writeln!(
-                stdout,
-                "   {}   | {:>10} | {:.2}  | {}",
-                i + 1,
-                src,
-                track.gain,
-                ascii_meter_with_db(peak)
-            )?;
-            line += 1;
-        }
     }
+    // Master row: always show. peaks has one extra slot for master (last element).
+    let master_peak = peaks.last().copied().unwrap_or(0.0);
     execute!(stdout, MoveTo(0, line), Clear(ClearType::CurrentLine))?;
+    writeln!(
+        stdout,
+        " master| {:>10} | {:.2}  | {}",
+        "(mix)",
+        master_gain,
+        ascii_meter_with_db(master_peak)
+    )?;
+    line += 1;
     for y in line..prompt_row {
         execute!(stdout, MoveTo(0, y), Clear(ClearType::CurrentLine))?;
     }
@@ -310,13 +322,26 @@ fn main() -> std::io::Result<()> {
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
     stdout.flush()?;
 
+    // Initial graph with master meter (1 slot when no tracks).
+    meter_buffer = Some(Arc::new(MeterBuffer::new(tracks.len() + 1)));
+    if let Some(compiled) = build_session_graph(
+        &tracks,
+        &open_inputs,
+        &silent_buffer,
+        master_gain,
+        meter_buffer.clone(),
+        output_sample_rate,
+    ) {
+        send_graph(&cmd_tx, compiled);
+    }
+
     loop {
         let pr = prompt_row(&tracks);
         let peaks = meter_buffer
             .as_ref()
             .map(|m| m.read_peaks())
             .unwrap_or_default();
-        draw_header(&mut stdout, &tracks, &peaks, pr)?;
+        draw_header(&mut stdout, &tracks, &peaks, master_gain, pr)?;
         execute!(stdout, MoveTo(0, pr), Clear(ClearType::CurrentLine))?;
         write!(stdout, "> {}", input_line)?;
         draw_history(&mut stdout, &history, pr + 1, HISTORY_LINES)?;
@@ -540,11 +565,8 @@ fn main() -> std::io::Result<()> {
                             }
 
                             if session_changed {
-                                meter_buffer = if tracks.is_empty() {
-                                    None
-                                } else {
-                                    Some(Arc::new(MeterBuffer::new(tracks.len())))
-                                };
+                                // One slot per track + one for master (always shown).
+                                meter_buffer = Some(Arc::new(MeterBuffer::new(tracks.len() + 1)));
                                 if let Some(compiled) = build_session_graph(
                                     &tracks,
                                     &open_inputs,
