@@ -4,13 +4,13 @@ Control-thread builds the patch; audio-thread runs it. Communication is lock-fre
 
 ## Core types and threads
 
-| Type              | Thread                             | Role                                                                                                                                                                                                                                                                           |
-| ----------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **AudioGraph**    | Control                            | Editable Directed Acyclic Graph: nodes + adjacency list. Add nodes and edges; compile to get a runnable graph.                                                                                                                                                                 |
-| **CompiledGraph** | Built on control, sent to audio    | Immutable: nodes in **topological order**, one **AudioBuffer** scratch per node. Runs in one pass: each node reads from its input scratch buffers, writes to its own. Last node’s scratch is copied to the callback output. Optionally holds **meter taps** (explained below). |
-| **Engine**        | Audio                              | Each callback: drain **Command**s, apply (e.g. SwapGraph, Quit), then run `current_graph.process(output)` or silence.                                                                                                                                                          |
-| **AudioBuffer**   | Audio                              | Fixed-size f32 array per node. Allocated at compile time; reused every callback. No alloc in process.                                                                                                                                                                          |
-| **RingBuffer**    | Backing for Command/Event channels | Lock-free SPSC; fixed capacity; `try_send` / `try_recv` only.                                                                                                                                                                                                                  |
+| Type              | Thread                       | Role                                                                                                                                                                    |
+| ----------------- | ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **AudioGraph**    | Control                      | Mutable **Directed Acyclic Graph** with nodes + adjacency list (edges).                                                                                                 |
+| **CompiledGraph** | Control writes / Audio reads | Immutable: nodes in **topological order**, one **AudioBuffer** scratch per node. Each node reads and writes to its own buffer. The last buffer is copied to the output. |
+| **Engine**        | Audio                        | Each callback: drain **Command**s, apply (e.g. SwapGraph, Quit), then run `current_graph.process(output)` or silence.                                                   |
+| **AudioBuffer**   | Audio                        | Fixed-size f32 array per node. Allocated at compile time; reused every callback.                                                                                        |
+| **RingBuffer**    | Control + Audio              | Lock-free **Single Producer, Single Consumer** buffer; fixed capacity;                                                                                                  |
 
 ## Data flow
 
@@ -32,10 +32,6 @@ Control-thread builds the patch; audio-thread runs it. Communication is lock-fre
 |                  |                           |    v                     |
 |                  |                           |  Output to device        |
 ```
-
-Control builds a new `CompiledGraph`, sends it, then drains the event channel. When `GraphSwapped(prev)` arrives, control drops `prev` so the old graph’s buffers are freed on the control thread. The audio thread never deallocates; it only replaces the pointer.
-
----
 
 ## Commands and events
 
