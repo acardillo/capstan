@@ -4,13 +4,13 @@ Control-thread builds the patch; audio-thread runs it. Communication is lock-fre
 
 ## Core types and threads
 
-| Type              | Thread          | Role                                                                                                                                                                    |
-| ----------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **AudioGraph**    | Control         | Mutable **Directed Acyclic Graph** with nodes + adjacency list (edges).                                                                                                 |
-| **CompiledGraph** | Control + Audio | Immutable: nodes in **topological order**, one **AudioBuffer** scratch per node. Each node reads and writes to its own buffer. The last buffer is copied to the output. |
-| **Engine**        | Audio           | Each callback: drain **Command**s, apply (e.g. SwapGraph, Quit), then run `current_graph.process(output)` or silence.                                                   |
-| **AudioBuffer**   | Audio           | Fixed-size f32 array per node. Allocated at compile time; reused every callback.                                                                                        |
-| **RingBuffer**    | Control + Audio | Lock-free **Single Producer, Single Consumer** buffer; fixed capacity;                                                                                                  |
+| Type              | Thread  | Role                                                                                                                                                                    |
+| ----------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **AudioGraph**    | Control | Mutable **Directed Acyclic Graph** with nodes + adjacency list (edges).                                                                                                 |
+| **CompiledGraph** | Both    | Immutable: nodes in **topological order**, one **AudioBuffer** scratch per node. Each node reads and writes to its own buffer. The last buffer is copied to the output. |
+| **Engine**        | Audio   | Each callback: drain **Command**s, apply (e.g. SwapGraph, Quit), then run `current_graph.process(output)` or silence.                                                   |
+| **AudioBuffer**   | Audio   | Fixed-size f32 array per node. Allocated at compile time; reused every callback.                                                                                        |
+| **RingBuffer**    | Both    | Lock-free **Single Producer, Single Consumer** buffer; fixed capacity;                                                                                                  |
 
 ## Data flow
 
