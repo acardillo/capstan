@@ -20,9 +20,10 @@ use capstan::meter::MeterBuffer;
 use capstan::nodes::{GainProcessor, InputNode, Mixer, SineGenerator};
 use capstan::run_audio;
 use clap::Parser;
-use crossterm::cursor::MoveTo;
+use crossterm::cursor::{MoveTo, Show};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::execute;
+use crossterm::style::{Color, ResetColor, SetForegroundColor};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType};
 
 const DEFAULT_FRAME_COUNT: usize = 512;
@@ -222,19 +223,40 @@ fn draw_header(
     Ok(())
 }
 
+const SUCCESS_PREFIX: &str = "  ✓ ";
+/// Zero-width space + "  " so warnings display as "  msg" (no symbol) in yellow.
+const WARNING_PREFIX: &str = "\u{200B}  ";
+const ERROR_PREFIX: &str = "  ✗ ";
+
 fn draw_history(stdout: &mut impl Write, history: &[String], start_row: u16, max_lines: usize) -> std::io::Result<()> {
     let take = history.len().saturating_sub(max_lines);
-    let lines = &history[take..];
+    let lines: Vec<_> = history[take..].iter().rev().collect();
     for (i, s) in lines.iter().enumerate() {
         let row = start_row + i as u16;
-        execute!(stdout, MoveTo(0, row), Clear(ClearType::CurrentLine))?;
-        let truncate = 200;
-        let display = if s.len() > truncate {
-            format!("{}...", &s[..truncate])
+        let color = if s.starts_with(SUCCESS_PREFIX) {
+            Color::Green
+        } else if s.starts_with(WARNING_PREFIX) {
+            Color::Yellow
+        } else if s.starts_with(ERROR_PREFIX) {
+            Color::Red
         } else {
-            s.clone()
+            Color::DarkGrey
+        };
+        execute!(stdout, MoveTo(0, row), Clear(ClearType::CurrentLine), SetForegroundColor(color))?;
+        let truncate = 200;
+        // Strip zero-width space from warning lines so they display as "  msg" (U+200B is 3 bytes in UTF-8)
+        let visible: String = if s.starts_with(WARNING_PREFIX) {
+            s.chars().skip(1).collect()
+        } else {
+            (*s).clone()
+        };
+        let display = if visible.len() > truncate {
+            format!("{}...", &visible[..truncate])
+        } else {
+            visible
         };
         writeln!(stdout, "{}", display)?;
+        execute!(stdout, ResetColor)?;
     }
     for i in lines.len()..max_lines {
         execute!(stdout, MoveTo(0, start_row + i as u16), Clear(ClearType::CurrentLine))?;
@@ -242,7 +264,18 @@ fn draw_history(stdout: &mut impl Write, history: &[String], start_row: u16, max
     Ok(())
 }
 
-const HISTORY_LINES: usize = 20;
+#[derive(Clone, Copy)]
+enum StatusKind {
+    Success,
+    Warning,
+    Error,
+    Neutral,
+}
+
+/// Last 3 commands (each command + result = 2 lines), shown newest-first.
+const HISTORY_LINES: usize = 6;
+
+const COMMAND_HISTORY_CAP: usize = 50;
 
 fn main() -> std::io::Result<()> {
     let cli = Cli::parse();
@@ -264,8 +297,11 @@ fn main() -> std::io::Result<()> {
     let silent_buffer: Arc<dyn SampleSource + Send + Sync> = Arc::new(InputSampleBuffer::new(2048));
     let mut meter_buffer: Option<Arc<MeterBuffer>> = None;
     let mut input_line = String::new();
+    let mut cursor_pos: usize = 0; // index into input_line (0..=len)
     let mut status_msg = String::new();
     let mut history: Vec<String> = Vec::new();
+    let mut command_history: Vec<String> = Vec::new();
+    let mut history_index: Option<usize> = None;
 
     enable_raw_mode().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
     let mut stdout = io::stdout();
@@ -284,6 +320,8 @@ fn main() -> std::io::Result<()> {
         execute!(stdout, MoveTo(0, pr), Clear(ClearType::CurrentLine))?;
         write!(stdout, "> {}", input_line)?;
         draw_history(&mut stdout, &history, pr + 1, HISTORY_LINES)?;
+        let cursor_col = (2 + cursor_pos.min(input_line.len())).min(u16::MAX as usize) as u16;
+        execute!(stdout, MoveTo(cursor_col, pr), Show)?;
         stdout.flush()?;
 
         if event::poll(Duration::from_millis(HEADER_REDRAW_MS))
@@ -297,9 +335,11 @@ fn main() -> std::io::Result<()> {
                     KeyCode::Enter => {
                         let line = input_line.trim().to_string();
                         input_line.clear();
+                        cursor_pos = 0;
                         if !line.is_empty() {
                             let parts: Vec<&str> = line.split_ascii_whitespace().collect();
                             let mut session_changed = false;
+                            let mut status_kind = StatusKind::Neutral;
 
                             match parts.as_slice() {
                                 ["quit" | "q"] => {
@@ -308,6 +348,9 @@ fn main() -> std::io::Result<()> {
                                     disable_raw_mode()
                                         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
                                     let _ = audio_handle.join();
+                                    execute!(stdout, Clear(ClearType::All), MoveTo(0, 0))
+                                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                                    stdout.flush()?;
                                     return Ok(());
                                 }
                                 ["help" | "h" | "?"] => {
@@ -320,6 +363,7 @@ fn main() -> std::io::Result<()> {
                                         gain: 0.7,
                                     });
                                     session_changed = true;
+                                    status_kind = StatusKind::Success;
                                     status_msg = format!("Created track {}.", tracks.len());
                                 }
                                 ["track", "delete", no] => {
@@ -327,8 +371,10 @@ fn main() -> std::io::Result<()> {
                                         if n >= 1 && n <= tracks.len() {
                                             tracks.remove(n - 1);
                                             session_changed = true;
+                                            status_kind = StatusKind::Success;
                                             status_msg = format!("Deleted track {}.", n);
                                         } else {
+                                            status_kind = StatusKind::Warning;
                                             status_msg = format!("Track number must be 1–{}.", tracks.len().max(1));
                                         }
                                     } else {
@@ -339,6 +385,7 @@ fn main() -> std::io::Result<()> {
                                 ["input", "--list" | "-l"] => {
                                     match input_device_list(&host) {
                                         Ok(devices) => {
+                                            status_kind = StatusKind::Success;
                                             if devices.is_empty() {
                                                 status_msg = "(no input devices)".to_string();
                                             } else {
@@ -352,7 +399,10 @@ fn main() -> std::io::Result<()> {
                                                 }
                                             }
                                         }
-                                        Err(e) => status_msg = format!("List devices: {}", e),
+                                        Err(e) => {
+                                            status_kind = StatusKind::Error;
+                                            status_msg = format!("List devices: {}", e);
+                                        }
                                     }
                                 }
                                 ["input", track_no, "--device", dev] => {
@@ -365,15 +415,18 @@ fn main() -> std::io::Result<()> {
                                                     tracks[tn - 1].source =
                                                         TrackSource::Device(d);
                                                     session_changed = true;
+                                                    status_kind = StatusKind::Success;
                                                     status_msg =
                                                         format!("Track {} → device {}.", tn, d);
                                                 }
                                                 Err(e) => {
+                                                    status_kind = StatusKind::Error;
                                                     status_msg =
                                                         format!("Failed to open device {}: {}", d, e);
                                                 }
                                             }
                                         } else {
+                                            status_kind = StatusKind::Warning;
                                             status_msg = format!(
                                                 "Track number must be 1–{}.",
                                                 tracks.len().max(1)
@@ -393,14 +446,17 @@ fn main() -> std::io::Result<()> {
                                             tracks[tn - 1].source =
                                                 TrackSource::Sine { freq_hz: f };
                                             session_changed = true;
+                                            status_kind = StatusKind::Success;
                                             status_msg =
                                                 format!("Track {} → sine {} Hz.", tn, f);
                                         } else if tn < 1 || tn > tracks.len() {
+                                            status_kind = StatusKind::Warning;
                                             status_msg = format!(
                                                 "Track number must be 1–{}.",
                                                 tracks.len().max(1)
                                             );
                                         } else {
+                                            status_kind = StatusKind::Warning;
                                             status_msg = "Frequency must be 0–20000 Hz.".to_string();
                                         }
                                     } else {
@@ -425,14 +481,17 @@ fn main() -> std::io::Result<()> {
                                                         buffer,
                                                     };
                                                     session_changed = true;
+                                                    status_kind = StatusKind::Success;
                                                     status_msg =
                                                         format!("Track {} → file {}.", tn, path_str);
                                                 }
                                                 Err(e) => {
+                                                    status_kind = StatusKind::Error;
                                                     status_msg = format!("File load: {}", e);
                                                 }
                                             }
                                         } else {
+                                            status_kind = StatusKind::Warning;
                                             status_msg = format!(
                                                 "Track number must be 1–{}.",
                                                 tracks.len().max(1)
@@ -448,6 +507,7 @@ fn main() -> std::io::Result<()> {
                                     if let Ok(g) = level.parse::<f32>() {
                                         master_gain = g.clamp(0.0, 2.0);
                                         session_changed = true;
+                                        status_kind = StatusKind::Success;
                                         status_msg = format!("Master gain set to {}.", master_gain);
                                     } else {
                                         status_msg = "Usage: gain <level>  or  gain <track_no> <level>".to_string();
@@ -460,9 +520,11 @@ fn main() -> std::io::Result<()> {
                                         if tn >= 1 && tn <= tracks.len() {
                                             tracks[tn - 1].gain = g.clamp(0.0, 2.0);
                                             session_changed = true;
+                                            status_kind = StatusKind::Success;
                                             status_msg =
                                                 format!("Track {} gain set to {}.", tn, tracks[tn - 1].gain);
                                         } else {
+                                            status_kind = StatusKind::Warning;
                                             status_msg =
                                                 format!("Track number must be 1–{}.", tracks.len().max(1));
                                         }
@@ -471,7 +533,10 @@ fn main() -> std::io::Result<()> {
                                     }
                                 }
 
-                                _ => status_msg = "Unknown command. Type 'help' for commands.".to_string(),
+                                _ => {
+                                    status_kind = StatusKind::Warning;
+                                    status_msg = "Unknown command. Type 'help' for commands.".to_string();
+                                }
                             }
 
                             if session_changed {
@@ -490,19 +555,70 @@ fn main() -> std::io::Result<()> {
                                 ) {
                                     send_graph(&cmd_tx, compiled);
                                 } else {
+                                    status_kind = StatusKind::Error;
                                     status_msg = "Failed to compile graph.".to_string();
                                 }
                             }
 
                             history.push(format!("> {}", line));
-                            history.push(format!("  {}", status_msg));
+                            let result_line = match status_kind {
+                                StatusKind::Success => format!("{}{}", SUCCESS_PREFIX, status_msg),
+                                StatusKind::Warning => format!("{}{}", WARNING_PREFIX, status_msg),
+                                StatusKind::Error => format!("{}{}", ERROR_PREFIX, status_msg),
+                                StatusKind::Neutral => format!("  {}", status_msg),
+                            };
+                            history.push(result_line);
+                            command_history.push(line);
+                            if command_history.len() > COMMAND_HISTORY_CAP {
+                                command_history.remove(0);
+                            }
+                            history_index = None;
+                        }
+                    }
+                    KeyCode::Left => {
+                        cursor_pos = cursor_pos.saturating_sub(1);
+                    }
+                    KeyCode::Right => {
+                        cursor_pos = (cursor_pos + 1).min(input_line.len());
+                    }
+                    KeyCode::Up => {
+                        if command_history.is_empty() {
+                            // no-op
+                        } else if let Some(i) = history_index {
+                            if i + 1 < command_history.len() {
+                                history_index = Some(i + 1);
+                                input_line = command_history[command_history.len() - 1 - (i + 1)].clone();
+                                cursor_pos = input_line.len();
+                            }
+                        } else {
+                            history_index = Some(0);
+                            input_line = command_history.last().cloned().unwrap_or_default();
+                            cursor_pos = input_line.len();
+                        }
+                    }
+                    KeyCode::Down => {
+                        if let Some(0) = history_index {
+                            history_index = None;
+                            input_line = String::new();
+                            cursor_pos = 0;
+                        } else if let Some(i) = history_index {
+                            history_index = Some(i - 1);
+                            input_line = command_history[command_history.len() - 1 - (i - 1)].clone();
+                            cursor_pos = input_line.len();
                         }
                     }
                     KeyCode::Char(c) => {
-                        input_line.push(c);
+                        history_index = None;
+                        let pos = cursor_pos.min(input_line.len());
+                        input_line.insert(pos, c);
+                        cursor_pos = pos + 1;
                     }
                     KeyCode::Backspace => {
-                        input_line.pop();
+                        history_index = None;
+                        if cursor_pos > 0 && cursor_pos <= input_line.len() {
+                            cursor_pos -= 1;
+                            input_line.remove(cursor_pos);
+                        }
                     }
                     _ => {}
                 }
@@ -512,7 +628,7 @@ fn main() -> std::io::Result<()> {
         while let Some(evt) = evt_rx.try_recv() {
             if let capstan::event::Event::StreamStarted(sr) = evt {
                 output_sample_rate = sr;
-                history.push(format!("  Output sample rate: {} Hz", sr));
+                history.push(format!("{}Output sample rate: {} Hz", SUCCESS_PREFIX, sr));
             }
         }
     }
