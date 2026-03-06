@@ -17,7 +17,7 @@ use capstan::file_feeder::load_wav_at_rate;
 use capstan::graph::{AudioGraph, CompiledGraph, GraphNode};
 use capstan::input_buffer::{FilePlaybackBuffer, InputSampleBuffer, SampleSource};
 use capstan::meter::MeterBuffer;
-use capstan::nodes::{GainProcessor, InputNode, Mixer, RecordNode, SineGenerator};
+use capstan::nodes::{Echo, GainProcessor, InputNode, Mixer, RecordNode, SineGenerator};
 use capstan::record::{write_wav, RecordBuffer};
 use capstan::run_audio;
 use clap::Parser;
@@ -57,6 +57,8 @@ enum TrackSource {
 struct Track {
     source: TrackSource,
     gain: f32,
+    /// Delay in ms; None = no delay line on this track.
+    delay_ms: Option<f32>,
 }
 
 /// Open input streams: keep streams alive and map device index -> buffer.
@@ -125,6 +127,7 @@ fn build_session_graph(
         };
     }
 
+    const MAX_DELAY_MS: f32 = 2000.0;
     let mut gain_node_ids = Vec::with_capacity(tracks.len());
     for track in tracks {
         let source_node = match &track.source {
@@ -145,10 +148,23 @@ fn build_session_graph(
             }
         };
         let gain = g.add_node(GraphNode::Gain(GainProcessor::new(track.gain)));
-        g.add_edge(source_node, gain);
+        match track.delay_ms {
+            Some(ms) => {
+                let mut echo = Echo::new(MAX_DELAY_MS, sample_rate);
+                echo.set_delay_ms(ms);
+                let echo_node = g.add_node(GraphNode::Echo(echo));
+                g.add_edge(source_node, echo_node);
+                g.add_edge(echo_node, gain);
+            }
+            None => {
+                g.add_edge(source_node, gain);
+            }
+        }
         gain_node_ids.push(gain);
     }
 
+    let num_delays = tracks.iter().filter(|t| t.delay_ms.is_some()).count();
+    let n = tracks.len();
     let gains: Vec<f32> = tracks.iter().map(|t| t.gain).collect();
     let mix = g.add_node(GraphNode::Mixer(Mixer::new(gains)));
     for &gid in &gain_node_ids {
@@ -157,9 +173,8 @@ fn build_session_graph(
     let master = g.add_node(GraphNode::Gain(GainProcessor::new(master_gain)));
     g.add_edge(mix, master);
 
-    let n = tracks.len();
     let g = if let Some(rb) = record_buffer {
-        let master_id = capstan::graph::NodeId::new(2 * n + 1);
+        let master_id = capstan::graph::NodeId::new(n + num_delays + n + 1);
         let rec = g.add_node(GraphNode::Record(RecordNode::new(rb)));
         g.add_edge(master_id, rec);
         g
@@ -167,10 +182,13 @@ fn build_session_graph(
         g
     };
 
-    // Node order: ... master 2n+1 [, record 2n+2]. Tap track gains + master (same indices with or without record).
+    // Node order: sources 0..n, delays n..n+num_delays, gains n+num_delays..2n+num_delays, mix, master [, record].
     match &meter_buffer {
         Some(mb) if mb.len() == n + 1 => {
-            let tap_indices: Vec<usize> = (0..n).map(|i| n + i).chain(once(2 * n + 1)).collect();
+            let tap_indices: Vec<usize> = (0..n)
+                .map(|i| n + num_delays + i)
+                .chain(once(n + num_delays + n + 1))
+                .collect();
             g.compile_with_meter(DEFAULT_FRAME_COUNT, Some((tap_indices, Arc::clone(mb))))
                 .ok()
         }
@@ -255,18 +273,23 @@ fn draw_header(
 ) -> std::io::Result<()> {
     let mut line = 0u16;
     execute!(stdout, MoveTo(0, 0), Clear(ClearType::CurrentLine))?;
-    writeln!(stdout, " track | source     | gain  | level")?;
+    writeln!(stdout, " track | source     | gain  | echo    | level")?;
     line += 1;
     for (i, track) in tracks.iter().enumerate() {
         let src = source_display(&track.source);
         let peak = peaks.get(i).copied().unwrap_or(0.0);
+        let echo_display = track
+            .delay_ms
+            .map(|ms| format!("{:.0} ms", ms))
+            .unwrap_or_else(|| "-".to_string());
         execute!(stdout, MoveTo(0, line), Clear(ClearType::CurrentLine))?;
         writeln!(
             stdout,
-            "   {}   | {:>10} | {:.2}  | {}",
+            "   {}   | {:>10} | {:.2}  | {:>7} | {}",
             i + 1,
             src,
             track.gain,
+            echo_display,
             ascii_meter_with_db(peak)
         )?;
         line += 1;
@@ -276,9 +299,10 @@ fn draw_header(
     execute!(stdout, MoveTo(0, line), Clear(ClearType::CurrentLine))?;
     writeln!(
         stdout,
-        " master| {:>10} | {:.2}  | {}",
+        " master| {:>10} | {:.2}  | {:>7} | {}",
         "(mix)",
         master_gain,
+        "-",
         ascii_meter_with_db(master_peak)
     )?;
     line += 1;
@@ -528,13 +552,14 @@ fn main() -> std::io::Result<()> {
                                         return Ok(());
                                     }
                                     ["help" | "h" | "?"] => {
-                                        status_msg = "track create | track delete <no> | input --list | input <tn> --device <n> | input <tn> --sine <hz> | input <tn> --file <path> | gain [tn] <lvl> | record | quit".to_string();
+                                        status_msg = "track create | track delete <no> | input <tn> ... | gain [tn] <lvl> | echo <tn> <ms>|none | record | quit".to_string();
                                     }
 
                                     ["track", "create"] => {
                                         tracks.push(Track {
                                             source: TrackSource::None,
                                             gain: 0.7,
+                                            delay_ms: None,
                                         });
                                         session_changed = true;
                                         status_kind = StatusKind::Success;
@@ -725,6 +750,59 @@ fn main() -> std::io::Result<()> {
                                         } else {
                                             status_msg =
                                                 "Usage: gain <track_no> <level>".to_string();
+                                        }
+                                    }
+
+                                    ["echo", track_no, "none"] => {
+                                        if let Ok(tn) = track_no.parse::<usize>() {
+                                            if tn >= 1 && tn <= tracks.len() {
+                                                tracks[tn - 1].delay_ms = None;
+                                                session_changed = true;
+                                                status_kind = StatusKind::Success;
+                                                status_msg = format!("Track {} echo removed.", tn);
+                                            } else {
+                                                status_kind = StatusKind::Warning;
+                                                status_msg = format!(
+                                                    "Track number must be 1–{}.",
+                                                    tracks.len().max(1)
+                                                );
+                                            }
+                                        } else {
+                                            status_msg = "Usage: echo <track_no> <ms> | echo <track_no> none"
+                                                .to_string();
+                                        }
+                                    }
+                                    ["echo", track_no, ms_str] => {
+                                        if let Ok(tn) = track_no.parse::<usize>() {
+                                            if tn >= 1 && tn <= tracks.len() {
+                                                if let Ok(ms) = ms_str.parse::<f32>() {
+                                                    if (0.0..=2000.0).contains(&ms) {
+                                                        tracks[tn - 1].delay_ms = Some(ms);
+                                                        session_changed = true;
+                                                        status_kind = StatusKind::Success;
+                                                        status_msg = format!(
+                                                            "Track {} echo set to {:.0} ms.",
+                                                            tn, ms
+                                                        );
+                                                    } else {
+                                                        status_kind = StatusKind::Warning;
+                                                        status_msg =
+                                                            "Echo must be 0–2000 ms.".to_string();
+                                                    }
+                                                } else {
+                                                    status_msg = "Usage: echo <track_no> <ms> | echo <track_no> none"
+                                                        .to_string();
+                                                }
+                                            } else {
+                                                status_kind = StatusKind::Warning;
+                                                status_msg = format!(
+                                                    "Track number must be 1–{}.",
+                                                    tracks.len().max(1)
+                                                );
+                                            }
+                                        } else {
+                                            status_msg = "Usage: echo <track_no> <ms> | echo <track_no> none"
+                                                .to_string();
                                         }
                                     }
 

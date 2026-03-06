@@ -172,6 +172,82 @@ impl Processor for DelayLine {
     }
 }
 
+/// Echo: delay line with feedback and dry/wet mix. Repeats decay over time (echo).
+/// output = dry * input + wet * delayed; delay buffer is fed (input + feedback * delayed).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Echo {
+    buffer: Vec<f32>,
+    write_pos: usize,
+    delay_ms: f32,
+    sample_rate: u32,
+    /// Dry amount (0..=1). Direct signal level.
+    pub dry: f32,
+    /// Wet amount (0..=1). Delayed/repeated signal level.
+    pub wet: f32,
+    /// Feedback (0..=1). Amount of delayed signal fed back into the delay for repeats.
+    pub feedback: f32,
+}
+
+impl Echo {
+    /// Creates an echo with room for up to `max_delay_ms` milliseconds.
+    /// Default dry/wet/feedback give a clear repeating echo; adjust to taste.
+    pub fn new(max_delay_ms: f32, sample_rate: u32) -> Self {
+        let max_samples = (max_delay_ms / 1000.0 * sample_rate as f32).ceil().max(1.0) as usize;
+        Echo {
+            buffer: vec![0.0; max_samples],
+            write_pos: 0,
+            delay_ms: 0.0,
+            sample_rate,
+            dry: 0.6,
+            wet: 0.4,
+            feedback: 0.35,
+        }
+    }
+
+    /// Sets delay time in milliseconds (clamped to 0..max).
+    pub fn set_delay_ms(&mut self, delay_ms: f32) {
+        let max_ms = 1000.0 * self.buffer.len() as f32 / self.sample_rate as f32;
+        self.delay_ms = delay_ms.clamp(0.0, max_ms);
+    }
+
+    fn delay_samples(&self) -> usize {
+        let d = (self.delay_ms / 1000.0 * self.sample_rate as f32).round() as usize;
+        d.min(self.buffer.len())
+    }
+}
+
+impl Processor for Echo {
+    fn process(&mut self, inputs: &[&[f32]], output: &mut [f32]) {
+        let inp = match inputs.first() {
+            Some(s) => *s,
+            None => {
+                output.fill(0.0);
+                return;
+            }
+        };
+        let cap = self.buffer.len();
+        let delay = self.delay_samples();
+        let n = output.len().min(inp.len());
+        if delay == 0 {
+            for i in 0..n {
+                output[i] = self.dry * inp[i];
+                self.buffer[self.write_pos] = inp[i];
+                self.write_pos = (self.write_pos + 1) % cap;
+            }
+            output[n..].fill(0.0);
+            return;
+        }
+        for i in 0..n {
+            let read_pos = (self.write_pos + cap - delay) % cap;
+            let delayed = self.buffer[read_pos];
+            output[i] = self.dry * inp[i] + self.wet * delayed;
+            self.buffer[self.write_pos] = inp[i] + self.feedback * delayed;
+            self.write_pos = (self.write_pos + 1) % cap;
+        }
+        output[n..].fill(0.0);
+    }
+}
+
 /// Biquad filter (Direct Form I). Lowpass or highpass via Audio EQ Cookbook coefficients.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BiquadFilter {
