@@ -27,6 +27,11 @@ impl MeterBuffer {
         self.inner.len()
     }
 
+    /// Returns true if there are no tap slots.
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
     /// Writes the peak value for tap `index`. Called from the audio thread after processing a block.
     #[inline]
     pub fn write_peak(&self, index: usize, value: f32) {

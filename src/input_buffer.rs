@@ -79,9 +79,9 @@ impl InputSampleBuffer {
         let write = self.write_pos.load(Ordering::Acquire);
         let available = write.wrapping_sub(read);
         let n = out.len().min(available).min(self.cap);
-        for i in 0..n {
+        for (i, sample) in out[..n].iter_mut().enumerate() {
             let idx = (read.wrapping_add(i)) % self.cap;
-            out[i] = unsafe { *self.storage[idx].get() };
+            *sample = unsafe { *self.storage[idx].get() };
         }
         out[n..].fill(0.0);
         self.read_pos.store(read.wrapping_add(n), Ordering::Release);

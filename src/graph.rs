@@ -48,6 +48,26 @@ impl Processor for GraphNode {
     }
 }
 
+/// Errors from graph operations (e.g. cycle detected, invalid meter config).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GraphError {
+    /// The graph contains a cycle; topological sort is impossible.
+    Cycle,
+    /// Meter tap indices or buffer length is invalid.
+    InvalidMeterTaps,
+}
+
+impl std::fmt::Display for GraphError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GraphError::Cycle => write!(f, "graph contains a cycle"),
+            GraphError::InvalidMeterTaps => write!(f, "invalid meter tap configuration"),
+        }
+    }
+}
+
+impl std::error::Error for GraphError {}
+
 /// Audio graph: adjacency list + node storage. Lives only on the control thread.
 /// Nodes are stored in a Vec; NodeId is the index. Edges go from node A to node B (A feeds B).
 pub struct AudioGraph {
@@ -55,6 +75,12 @@ pub struct AudioGraph {
     nodes: Vec<GraphNode>,
     /// adjacency[id.as_usize()] is the list of node ids that this node's output feeds into.
     adjacency: Vec<Vec<NodeId>>,
+}
+
+impl Default for AudioGraph {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl AudioGraph {
@@ -89,8 +115,8 @@ impl AudioGraph {
     }
 
     /// Returns nodes in topological order (Kahn's algorithm). Nodes with no incoming edges first.
-    /// Returns `Err(())` if the graph contains a cycle.
-    pub fn topological_sort(&self) -> Result<Vec<NodeId>, ()> {
+    /// Returns `Err(GraphError::Cycle)` if the graph contains a cycle.
+    pub fn topological_sort(&self) -> Result<Vec<NodeId>, GraphError> {
         let n = self.nodes.len();
         if n == 0 {
             return Ok(Vec::new());
@@ -123,13 +149,13 @@ impl AudioGraph {
             }
         }
         if order.len() != n {
-            return Err(()); // cycle: some nodes never got in_degree 0
+            return Err(GraphError::Cycle); // cycle: some nodes never got in_degree 0
         }
         Ok(order)
     }
 
     /// Builds a CompiledGraph: topo-sorted nodes, one scratch buffer per node, and input indices per node.
-    pub fn compile(&self, frame_count: usize) -> Result<CompiledGraph, ()> {
+    pub fn compile(&self, frame_count: usize) -> Result<CompiledGraph, GraphError> {
         self.compile_with_meter(frame_count, None)
     }
 
@@ -141,16 +167,16 @@ impl AudioGraph {
         &self,
         frame_count: usize,
         meter: Option<(Vec<usize>, Arc<MeterBuffer>)>,
-    ) -> Result<CompiledGraph, ()> {
+    ) -> Result<CompiledGraph, GraphError> {
         let order = self.topological_sort()?;
         let n = order.len();
         if let Some((ref tap_indices, ref buf)) = meter {
             if tap_indices.len() != buf.len() {
-                return Err(());
+                return Err(GraphError::InvalidMeterTaps);
             }
             for &idx in tap_indices {
                 if idx >= n {
-                    return Err(());
+                    return Err(GraphError::InvalidMeterTaps);
                 }
             }
         }

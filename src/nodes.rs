@@ -317,7 +317,7 @@ mod tests {
         let mut sine_generator = SineGenerator::new(440.0, 48000);
         let mut buffer = AudioBuffer::new(128);
         sine_generator.process(&[], buffer.as_mut_slice());
-        assert!(buffer.as_slice().iter().all(|&x| x >= -1.0 && x <= 1.0));
+        assert!(buffer.as_slice().iter().all(|&x| (-1.0..=1.0).contains(&x)));
         assert!(buffer.as_slice().iter().any(|&x| x != 0.0));
     }
 
@@ -404,7 +404,7 @@ mod tests {
         let mut delay = DelayLine::new(10.0, 48_000);
         delay.set_delay_ms(0.0);
         let input: Vec<f32> = (0..8).map(|i| i as f32).collect();
-        let mut output = vec![0.0f32; 8];
+        let mut output = [0.0f32; 8];
         delay.process(&[&input[..]], &mut output[..]);
         assert_eq!(&output[..8], &input[..]);
     }

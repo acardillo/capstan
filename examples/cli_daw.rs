@@ -150,15 +150,14 @@ fn build_session_graph(
 
     let n = tracks.len();
     // Node order: sources 0..n, gains n..2n, mixer 2n, master 2n+1. Tap track gains + master.
-    let compiled = match &meter_buffer {
+    match &meter_buffer {
         Some(mb) if mb.len() == n + 1 => {
             let tap_indices: Vec<usize> = (0..n).map(|i| n + i).chain(once(2 * n + 1)).collect();
             g.compile_with_meter(DEFAULT_FRAME_COUNT, Some((tap_indices, Arc::clone(mb))))
                 .ok()
         }
         _ => g.compile(DEFAULT_FRAME_COUNT).ok(),
-    };
-    compiled
+    }
 }
 
 fn source_display(source: &TrackSource) -> String {
@@ -332,23 +331,22 @@ fn main() -> std::io::Result<()> {
     let mut master_gain: f32 = 0.8;
     let mut open_inputs = OpenInputs::new();
     let silent_buffer: Arc<dyn SampleSource + Send + Sync> = Arc::new(InputSampleBuffer::new(2048));
-    let mut meter_buffer: Option<Arc<MeterBuffer>> = None;
+    let mut meter_buffer = Some(Arc::new(MeterBuffer::new(tracks.len() + 1)));
     let mut input_line = String::new();
     let mut cursor_pos: usize = 0; // index into input_line (0..=len)
-    let mut status_msg = String::new();
+    let mut status_msg: String;
     let mut history: Vec<String> = Vec::new();
     let mut command_history: Vec<String> = Vec::new();
     let mut history_index: Option<usize> = None;
 
-    enable_raw_mode().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    enable_raw_mode().map_err(std::io::Error::other)?;
     let mut stdout = io::stdout();
 
     execute!(stdout, Clear(ClearType::All), MoveTo(0, 0))
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        .map_err(std::io::Error::other)?;
     stdout.flush()?;
 
     // Initial graph with master meter (1 slot when no tracks).
-    meter_buffer = Some(Arc::new(MeterBuffer::new(tracks.len() + 1)));
     if let Some(compiled) = build_session_graph(
         &tracks,
         &open_inputs,
@@ -375,7 +373,7 @@ fn main() -> std::io::Result<()> {
         stdout.flush()?;
 
         if event::poll(Duration::from_millis(HEADER_REDRAW_MS))
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
+            .map_err(std::io::Error::other)?
         {
             if let Ok(Event::Key(ke)) = event::read() {
                 if ke.kind != KeyEventKind::Press {
@@ -395,13 +393,10 @@ fn main() -> std::io::Result<()> {
                                 ["quit" | "q"] => {
                                     let _ = cmd_tx.try_send(Command::Quit);
                                     let _ = shutdown_tx.send(());
-                                    disable_raw_mode().map_err(|e| {
-                                        std::io::Error::new(std::io::ErrorKind::Other, e)
-                                    })?;
+                                    disable_raw_mode().map_err(std::io::Error::other)?;
                                     let _ = audio_handle.join();
-                                    execute!(stdout, Clear(ClearType::All), MoveTo(0, 0)).map_err(
-                                        |e| std::io::Error::new(std::io::ErrorKind::Other, e),
-                                    )?;
+                                    execute!(stdout, Clear(ClearType::All), MoveTo(0, 0))
+                                        .map_err(std::io::Error::other)?;
                                     stdout.flush()?;
                                     return Ok(());
                                 }

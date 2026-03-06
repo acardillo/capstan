@@ -38,6 +38,11 @@ impl AudioBuffer {
         self.storage.len()
     }
 
+    /// Returns true if the buffer has no samples.
+    pub fn is_empty(&self) -> bool {
+        self.storage.is_empty()
+    }
+
     /// Mutable slice of the buffer for writing samples. Used on the audio thread.
     pub fn as_mut_slice(&mut self) -> &mut [f32] {
         &mut self.storage

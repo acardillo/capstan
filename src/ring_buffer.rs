@@ -87,18 +87,14 @@ impl<T> RingBuffer<T> {
     pub fn is_empty(&self) -> bool {
         let read = self.read_index.load(Ordering::Relaxed);
         let write = self.write_index.load(Ordering::Relaxed);
-
-        let is_empty = read == write;
-        is_empty
+        read == write
     }
 
     /// Returns whether the buffer is full (try_send would fail).
     pub fn is_full(&self) -> bool {
         let write = self.write_index.load(Ordering::Relaxed);
         let read = self.read_index.load(Ordering::Relaxed);
-
-        let is_full = write.wrapping_sub(read) == self.cap;
-        is_full
+        write.wrapping_sub(read) == self.cap
     }
 }
 

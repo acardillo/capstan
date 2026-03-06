@@ -45,15 +45,13 @@ impl std::error::Error for DeviceError {}
 /// holding multiple devices open.
 pub fn input_device_list(host: &cpal::Host) -> Result<Vec<InputDeviceInfo>, DeviceError> {
     let mut list = Vec::new();
-    let mut index = 0usize;
-    for device in host.input_devices().map_err(DeviceError::List)? {
+    for (index, device) in host.input_devices().map_err(DeviceError::List)?.enumerate() {
         let name = device
             .description()
             .map_err(DeviceError::Name)?
             .name()
             .to_string();
         list.push(InputDeviceInfo { index, name });
-        index += 1;
     }
     Ok(list)
 }
