@@ -5,7 +5,7 @@ Capstan is a composable DSP library that uses two threads:
 1. **Control Thread** - Responsible for modifying signal processing chains.
 2. **Audio Thread** - Responsible for running the signal processing chains and computing output samples.
 
-Threads communicate with eachother via 2 Lock-free buffers:
+Threads communicate with each other via two lock-free buffers:
 
 1. **Command Buffer** - Commands from the control thread to the audio thread.
 2. **Event Buffer** - Events from the audio thread to the control thread.
@@ -70,7 +70,7 @@ Inputs are just nodes in the Audio Graph that generate samples. There are three 
 
 Device and File inputs use the **SampleSource** trait via **InputNode**. Sample sources provide a `read_block` method that fills the output buffer. Each type implements this trait differently:
 
-- **InputSampleBuffer** — A lock-free SPSC buffer. **Producer**: the input stream callback from CPAL. **Consumer**: the graph’s InputNode in the output callback. On overflow, oldest samples are dropped.
+- **InputSampleBuffer** — A lock-free SPSC buffer. **Producer**: the input stream callback from CPAL. **Consumer**: the graph's InputNode in the output callback. On overflow, oldest samples are dropped.
 
 - **FilePlaybackBuffer** — Stores the whole file in memory as mono samples at the output sample rate. The audio graph reads from it directly. Using one thread ensures no rate mismatch or overflow. Memory is loaded via the _File Feeder_.
 
