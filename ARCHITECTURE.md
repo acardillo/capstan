@@ -1,8 +1,19 @@
 # Architecture
 
-Control-thread builds the patch; audio-thread runs it. Communication is lock-free SPSC (Commands control→audio, Events audio→control). No allocation on the audio path after startup.
+Capstan is a composable DSP library that uses two threads:
 
-## Core types and threads
+1. **Control Thread** - Responsible for modifying signal processing chains.
+2. **Audio Thread** - Responsible for running the signal processing chains and computing output samples.
+
+Threads communicate with eachother via 2 Lock-free buffers:
+
+1. **Command Buffer** - Commands from the control thread to the audio thread.
+2. **Event Buffer** - Events from the audio thread to the control thread.
+
+_Commands_ are used to modify the audio graph and to quit the audio thread.
+_Events_ are used to notify the control thread of events such as the audio thread starting or stopping.
+
+## Core Types
 
 | Type              | Thread  | Role                                                                                                                                                                    |
 | ----------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
