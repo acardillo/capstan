@@ -3,6 +3,21 @@
 //! Add a [`RecordNode`](crate::nodes::RecordNode) with a shared [`RecordBuffer`] to your graph.
 //! Arm the buffer to start, disarm to stop, then [`drain`](RecordBuffer::drain) and
 //! [`write_wav`] to save.
+//!
+//! # Safety
+//!
+//! **RecordBuffer** uses `UnsafeCell<f32>` for storage and `unsafe impl Send + Sync`. The
+//! invariants that make this correct:
+//!
+//! - **Single producer, single consumer:** Only the **audio thread** (in the graph’s [`RecordNode`](crate::nodes::RecordNode)
+//!   processing) may call [`write_block`](RecordBuffer::write_block). Only the **control thread**
+//!   may call [`set_armed`](RecordBuffer::set_armed), [`is_armed`](RecordBuffer::is_armed), and
+//!   [`drain`](RecordBuffer::drain). No other code may write to or read from the storage.
+//! - **Index coordination:** `write_pos` and `read_pos` are updated with `Acquire`/`Release`. The
+//!   audio thread only writes slots that are either free or have been logically dropped (when full,
+//!   it advances `read_pos` then writes). The control thread only reads slots that have been
+//!   written (via `write_pos`/`read_pos`). When not armed, `write_block` is a no-op so the
+//!   control thread may safely drain after disarming.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

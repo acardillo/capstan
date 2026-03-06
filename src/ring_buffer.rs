@@ -1,5 +1,21 @@
 //! SPSC (single producer, single consumer) ring buffer for lock-free messaging
-//! between the control thread and the audio thread
+//! between the control thread and the audio thread.
+//!
+//! # Safety
+//!
+//! This module uses `unsafe` for writing to and reading from [`MaybeUninit`] slots in the ring.
+//! The invariants that make this correct:
+//!
+//! - **Single producer, single consumer:** Only one thread may ever call [`try_send`](RingBuffer::try_send),
+//!   and only one (other) thread may ever call [`try_recv`](RingBuffer::try_recv). The producer
+//!   is the only writer of `write_index` and of slot memory; the consumer is the only writer of
+//!   `read_index` and the only reader of slot memory.
+//! - **Full/empty checks:** The producer only writes a slot when `write - read < cap` (not full),
+//!   so it never overwrites a slot the consumer has not yet read. The consumer only reads a slot
+//!   when `read != write` (not empty), so it never reads a slot the producer has not yet written.
+//! - **Memory ordering:** `Acquire`/`Release` on the indices synchronize the producer and consumer
+//!   so that the consumer sees the written value after advancing `write_index`, and the producer
+//!   sees the consumer’s read after advancing `read_index`.
 
 use std::mem::MaybeUninit;
 use std::ptr;

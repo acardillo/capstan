@@ -58,9 +58,15 @@ impl std::fmt::Display for RunAudioError {
             RunAudioError::NoOutputDevice => write!(f, "no output device available"),
             RunAudioError::NoOutputConfig(e) => write!(f, "no output config: {}", e),
             RunAudioError::UnsupportedSampleFormat(fmt) => {
-                write!(f, "run_audio only supports F32 output; device has {:?}", fmt)
+                write!(
+                    f,
+                    "run_audio only supports F32 output; device has {:?}",
+                    fmt
+                )
             }
-            RunAudioError::BuildOutputStream(e) => write!(f, "failed to build output stream: {}", e),
+            RunAudioError::BuildOutputStream(e) => {
+                write!(f, "failed to build output stream: {}", e)
+            }
             RunAudioError::PlayStream(e) => write!(f, "failed to start output stream: {}", e),
         }
     }
@@ -194,9 +200,8 @@ pub fn run_audio(
                     ) {
                         let _ = input_stream.play();
                         let _input_stream = input_stream;
-                        let err_fn_out = move |err: cpal::StreamError| {
-                            eprintln!("output stream error: {}", err)
-                        };
+                        let err_fn_out =
+                            move |err: cpal::StreamError| eprintln!("output stream error: {}", err);
                         let out_stream = device
                             .build_output_stream(
                                 &config,
@@ -210,9 +215,7 @@ pub fn run_audio(
                                 None,
                             )
                             .map_err(RunAudioError::BuildOutputStream)?;
-                        out_stream
-                            .play()
-                            .map_err(RunAudioError::PlayStream)?;
+                        out_stream.play().map_err(RunAudioError::PlayStream)?;
                         let _ = shutdown.recv();
                         return Ok(());
                     }

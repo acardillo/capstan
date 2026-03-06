@@ -2,6 +2,25 @@
 //! (first channel only); output reads exactly the samples it needs. Pre-allocated, real-time safe.
 //!
 //! For file playback without a feeder thread, use [`FilePlaybackBuffer`] (pull-based from in-memory buffer).
+//!
+//! # Safety
+//!
+//! **InputSampleBuffer:** This type uses `UnsafeCell<f32>` for storage and `unsafe impl Send + Sync`.
+//! The invariants are:
+//!
+//! - **Single producer, single consumer:** Only the **input stream callback** (one thread) may call
+//!   [`write_block`](InputSampleBuffer::write_block). Only the **output callback** (one thread, possibly
+//!   the same or different depending on the host) may call [`read_block`](InputSampleBuffer::read_block).
+//!   No other code may write to or read from the storage.
+//! - **Index coordination:** `write_pos` and `read_pos` are updated with `Acquire`/`Release` so that
+//!   the producer only writes slots that have been logically consumed (or are free), and the consumer
+//!   only reads slots that have been written. When the buffer is full, the producer advances
+//!   `read_pos` (drops oldest), then writes; the consumer never touches `write_pos`.
+//!
+//! **FilePlaybackBuffer:** Uses `unsafe impl Send + Sync` because it holds `Arc<Vec<f32>>` and
+//! `AtomicUsize`. The `Vec` is only ever read (no concurrent mutation); the position is the only
+//! mutable state and it is updated atomically. No `UnsafeCell` or raw pointer access; the unsafe
+//! impl is safe.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;

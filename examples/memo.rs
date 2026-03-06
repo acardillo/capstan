@@ -119,7 +119,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match audio_result_rx.recv() {
         Ok(Ok(())) => {}
         Ok(Err(e)) => return Err(e.into()),
-        Err(_) => return Err(std::io::Error::other("audio thread exited without sending result").into()),
+        Err(_) => {
+            return Err(std::io::Error::other("audio thread exited without sending result").into())
+        }
     }
 
     let filename = format!(
