@@ -3,8 +3,8 @@
 //!
 //! ## Examples
 //!
-//! See the `cli_daw` example for a full CLI-based DAW that drives the engine via stdin:
-//! `cargo run --example cli_daw`.
+//! See the `daw` example for a full CLI-based DAW that drives the engine via stdin:
+//! `cargo run --example daw`.
 //!
 //! ## Latency
 //! End-to-end latency is dominated by **buffer size**, not by CPAL. The callback is invoked

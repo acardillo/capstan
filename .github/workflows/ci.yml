@@ -46,5 +46,8 @@ jobs:
       - name: Test
         run: cargo test --all-targets
 
-      - name: Build example
-        run: cargo build --example cli_daw
+      - name: Build DAW example
+        run: cargo build --example daw
+
+      - name: Build Memo example
+        run: cargo build --example memo

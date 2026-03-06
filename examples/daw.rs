@@ -1,7 +1,7 @@
 //! Example: CLI-based DAW (MVP) — tracks, input devices, per-track and master gain.
 //! Sticky header at top lists tracks and draws live level meters (ASCII).
 //!
-//! Run with: `cargo run --example cli_daw`
+//! Run with: `cargo run --example daw`
 
 use std::collections::HashMap;
 use std::io::{self, Write};
@@ -33,8 +33,8 @@ const HEADER_REDRAW_MS: u64 = 80;
 const METER_DB_MIN: f32 = -60.0;
 
 #[derive(Parser, Debug)]
-#[command(name = "capstan-cli-daw")]
-#[command(about = "Capstan CLI DAW (MVP) — tracks, input devices, gain.")]
+#[command(name = "daw")]
+#[command(about = "Capstan DAW (MVP) — tracks, input devices, gain.")]
 struct Cli {
     #[arg(long, default_value = "1024")]
     channel_capacity: usize,
