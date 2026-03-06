@@ -18,8 +18,8 @@ The **CLI DAW** example is the deliverable: a small CLI-based digital audio work
 
 Capstan is a library crate. Use it to build your own real-time audio apps: construct an `AudioGraph`, compile it to a `CompiledGraph`, send it to the audio thread with `Command::SwapGraph`, and run the `Engine` in your own audio callback (e.g. using `capstan::cpal` and `stream_config_with_low_latency`). See crate docs and the `cli_daw` example for a full run loop.
 
-- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — Types, data flow, and how the system is structured.
-- **[docs/DESIGN.md](docs/DESIGN.md)** — Why: two threads, lock-free, compiled graph, pull-based file playback.
+- **[docs/ARCHITECTURE.md](ARCHITECTURE.md)** — Types, data flow, and how the system is structured.
+- **[docs/DESIGN.md](DESIGN.md)** — Why: two threads, lock-free, compiled graph, pull-based file playback.
 
 ## Pre-commit (format + lint)
 

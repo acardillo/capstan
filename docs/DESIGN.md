@@ -1,43 +1,35 @@
-# Design decisions
+# Design Decisions
 
-Short rationale for the main architectural choices. See [ARCHITECTURE.md](ARCHITECTURE.md) for how the system is built; this document explains why.
-
----
+This document explains the design decisions/rationale behind the architecture.
 
 ## Two threads (control vs audio)
 
 **Decision:** All graph editing, file loading, and UI run on the **control thread**. The **audio thread** only drains commands and runs the compiled graph in the output callback.
 
-**Why:** The audio callback has hard real-time constraints: it must produce a block of samples within a few milliseconds (e.g. ~2.7 ms at 128 frames @ 48 kHz). If the callback blocks on I/O, allocation, or a lock held by another thread, the driver can underrun and produce glitches or dropouts. Building graphs, loading WAVs, and handling user input are unpredictable in time and can block. Keeping them off the audio thread ensures the callback only does bounded, deterministic work: drain commands (lock-free), then run the current graph (fixed topology and buffers). The control thread is free to do slow or blocking work; it communicates with the audio thread only via messages.
+**Why:** The audio callback has hard real-time constraints: it must produce a block of samples within a few milliseconds (~2.7 ms @ 48 kHz). If the audio callback blocks the driver can underrun and produce glitches or dropouts. Building graphs, loading WAVs, and handling user input are unpredictable in time and can block. The audio thread only does bounded, deterministic work: draining commands and running the current graph. The control thread is free to do slow or blocking work; it communicates with the audio thread only via messages.
 
-**Tradeoff:** Graph changes take effect on the next callback (one block of latency). That’s acceptable for interactive use; we avoid any design that would let the callback wait on the control thread.
-
----
+**Tradeoff:** Graph changes take effect on the next callback (one block of latency). That’s acceptable for most interactive applications.
 
 ## Lock-free messaging
 
-**Decision:** Command and event channels are **lock-free SPSC ring buffers** (atomics, no mutexes). The audio thread only uses `try_recv` / `try_send`; it never blocks waiting for the control thread.
+**Decision:** Command channels are **lock-free SPSC ring buffers**. The audio thread only uses `try_recv` and `try_send` to communicate with the control thread, never blocking.
 
-**Why:** If the audio thread called a blocking `recv()` on a mutex-based channel, and the control thread was slow or preempted, the callback could block and miss its deadline. With a lock-free ring buffer and non-blocking try operations, the worst case is: the audio thread doesn’t see a command this callback and applies it next time, or the control thread gets “buffer full” when sending. We never stall the audio thread. Same for events: the control thread polls with `try_recv`; if the buffer is full, the audio thread drops the send (or we size the buffer so that’s rare). Real-time systems avoid locks in the hot path; lock-free SPSC is a standard way to pass data between a real-time thread and the rest of the app.
+**Why:** If the audio thread called a blocking `recv()` (e.g. a mutex channel) instead, and the control thread was slow, the callback could block and stall the audio thread. With a lock-free ring buffer and non-blocking try operations, the worst cases are commands being applied one cycle late or the buffer being full (this is unlikely given the buffer size). We _never_ stall the audio thread.
 
-**Tradeoff:** We don’t provide “wait until the audio thread has applied this command” semantics; the API is fire-and-forget. Callers that need confirmation use events (e.g. `GraphSwapped`) and poll.
-
----
+**Tradeoff:** We don’t provide any blocking capabilities on the audio thread. Logic cannot wait until a command is applied. Events must be used instead to achieve the desired semantics.
 
 ## Compiled graph (immutable execution plan)
 
-**Decision:** The control thread builds a mutable **AudioGraph** (nodes, edges). When the user is done editing, we **compile** it into a **CompiledGraph**: topologically sorted node list, one preallocated scratch buffer per node, no allocation in the audio path. The audio thread only ever sees a `CompiledGraph`; swapping is replacing the current one with a new one (and receiving the old one back via an event for disposal).
+**Decision:** The control thread builds a mutable, directed acyclic graph (**AudioGraph**). When the user is done editing, we _compile_ it into an immutable, topologically sorted node list (**CompiledGraph**). Memory for compiled graphs is allocated on the control thread. The audio thread only interacts with the compiled graph, modifying the signal path by transferring ownership of the new graph to the audio thread and returning the old graph to the control thread for disposal.
 
-**Why:** If the audio thread walked a shared, mutable graph, we’d need synchronization (locks or tricky lock-free structures) and the callback could still see an inconsistent topology mid-edit. By compiling on the control thread, we produce an immutable snapshot: a fixed order of nodes and fixed buffers. The audio thread’s `process()` is a simple loop over that list; no allocation, no shared mutable state, no locks. Graph edits happen on the control thread; the only cross-thread operation is “swap in this new compiled graph,” which is a pointer swap and safe. The cost of compilation (topo sort, buffer allocation) is paid once per edit, not every callback.
+**Why:** If the audio thread used a shared mutable graph, we would need synchronization via locks or a higher complexity lock-free structure. By compiling on the control thread, we produce an immutable snapshot containing a fixed order of nodes and pre-allocated buffers. The audio thread can then process audio in a simple loop over the compiled graph with no allocation, shared state, or locks. The only cross-thread operation needed is ownership transfer of compiled graphs over the command channel. The cost of compilation is paid once per edit on the control thread, not every callback.
 
-**Tradeoff:** Compilation has a cost (clone nodes, allocate scratch buffers). We assume edits are infrequent relative to callback rate. For very large or very frequently changing graphs, you’d need to measure; the design favors simplicity and real-time safety over zero-cost edits.
-
----
+**Tradeoff:** Compiling the graph can be costly for large and frequently changing graphs. This design works well for most applications where edits are infrequent relative to callback rate. Reconsider only if you need to change the graph at near-callback rates (e.g. many times per second) or if graphs grow very large.
 
 ## Pull-based file playback
 
-**Decision:** File playback uses a **pull-based** model: the entire WAV is loaded into memory (mono, resampled to output rate). The audio callback reads from that buffer via an atomic read position. No separate “feeder” thread.
+**Decision:** File playback uses a **pull-based** model: the entire WAV is loaded into memory and is resampled to the output rate. The audio callback reads from that buffer via an atomic read position eliminating the need for a separate feeder thread.
 
-**Why:** We initially used a **push-based** design: a background thread decoded/resampled the file and wrote chunks into a ring buffer that the audio callback read from. In practice, scheduling jitter meant the feeder and the callback often got out of sync—buffer underruns (silence or repeats) or overruns (drops), which showed up as crackle and drift. Fixing that required ever more tuning (buffer sizes, sleep timing). Switching to **pull-based**: load the whole file once on the control thread, then the audio thread only reads the next block each callback. No second thread, no rate matching, no producer/consumer coordination. The callback just advances an atomic index; worst case we reuse the same block if something is slow, but we never block.
+**Why:** We initially used a **push-based** design with a feeder thread that decoded, resampled the file and wrote chunks into a ring buffer that the audio thread read from. Scheduling jitter meant the feeder and the callback often got out of sync manifesting as crackle and drift in the audio. This was fixed by switching to a simpler **pull-based** model. The whole file is loaded once on the control thread, then the audio thread only reads the next block each callback. No second thread, no rate matching, no producer/consumer coordination.
 
-**Tradeoff:** Memory holds the full decoded file. For long or many simultaneous files that can be significant; for typical clips and a small number of tracks it’s acceptable. We avoid the complexity and fragility of a feeder thread in the real-time path.
+**Tradeoff:** Memory holds the full decoded file. For long or many simultaneous files that can add up. Future work could explore a more memory-efficient approach such as streaming the file or using a more efficient resampling algorithm. For now, this design is simple and avoids the fragility of a feeder thread in favor of the real-time path.
