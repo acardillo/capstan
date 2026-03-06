@@ -2,6 +2,15 @@
 //! Sticky header at top lists tracks and draws live level meters (ASCII).
 //!
 //! Run with: `cargo run --example daw`
+//!
+//! Structure:
+//! - Types: CLI, track/source, OpenInputs, Session, StatusKind
+//! - Graph: build_session_graph, send_graph
+//! - Paths: recording_path, expand_tilde
+//! - UI: draw_header, draw_history, meter helpers
+//! - Commands: parse_track_no, handle_command
+//! - Recording: stop_recording_and_save
+//! - Main: event loop
 
 use std::collections::HashMap;
 use std::io::{self, Write};
@@ -29,11 +38,25 @@ use crossterm::execute;
 use crossterm::style::{Color, ResetColor, SetForegroundColor};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType};
 
+// -----------------------------------------------------------------------------
+// Constants
+// -----------------------------------------------------------------------------
+
 const DEFAULT_FRAME_COUNT: usize = 512;
 const METER_WIDTH: usize = 24;
 const HEADER_REDRAW_MS: u64 = 80;
-/// dB range for the bar: bar is empty at DB_MIN, full at 0 dB. Makes the meter more sensitive to low levels.
 const METER_DB_MIN: f32 = -60.0;
+const HISTORY_LINES: usize = 6;
+const COMMAND_HISTORY_CAP: usize = 50;
+const SUCCESS_PREFIX: &str = "  ✓ ";
+const WARNING_PREFIX: &str = "\u{200B}  ";
+const ERROR_PREFIX: &str = "  ✗ ";
+
+const HELP_MSG: &str = "track create | track delete <no> | input <tn> ... | gain [tn] <lvl> | echo <tn> <ms>|none | tremolo <tn> <rate> <depth>|none | overdrive <tn> <0-5>|none | record | quit";
+
+// -----------------------------------------------------------------------------
+// Types
+// -----------------------------------------------------------------------------
 
 #[derive(Parser, Debug)]
 #[command(name = "daw")]
@@ -59,12 +82,36 @@ enum TrackSource {
 struct Track {
     source: TrackSource,
     gain: f32,
-    /// Echo delay in ms; None = no echo on this track.
     delay_ms: Option<f32>,
-    /// Tremolo: None = off, Some((rate_hz, depth)).
     tremolo: Option<(f32, f32)>,
-    /// Overdrive: None = off, Some(drive amount 0..5).
     overdrive: Option<f32>,
+}
+
+/// All mutable session state that commands and the graph use.
+struct Session {
+    tracks: Vec<Track>,
+    master_gain: f32,
+    open_inputs: OpenInputs,
+    meter_buffer: Option<Arc<MeterBuffer>>,
+    output_sample_rate: u32,
+    recording: bool,
+    record_buffer: Option<Arc<RecordBuffer>>,
+    record_output_path: Option<PathBuf>,
+}
+
+#[derive(Clone, Copy)]
+enum StatusKind {
+    Success,
+    Warning,
+    Error,
+    Neutral,
+}
+
+/// Result of handling one command: what to show and whether to quit.
+struct CommandOutcome {
+    status_kind: StatusKind,
+    status_msg: String,
+    quit: bool,
 }
 
 /// Open input streams: keep streams alive and map device index -> buffer.
@@ -103,16 +150,22 @@ impl OpenInputs {
     }
 }
 
+// -----------------------------------------------------------------------------
+// Graph
+// -----------------------------------------------------------------------------
+
 fn build_session_graph(
-    tracks: &[Track],
-    open_inputs: &OpenInputs,
+    session: &Session,
     silent_buffer: &Arc<dyn SampleSource + Send + Sync>,
-    master_gain: f32,
-    meter_buffer: Option<Arc<MeterBuffer>>,
-    sample_rate: u32,
     record_buffer: Option<Arc<RecordBuffer>>,
 ) -> Option<CompiledGraph> {
     use std::iter::once;
+    let tracks = &session.tracks;
+    let open_inputs = &session.open_inputs;
+    let master_gain = session.master_gain;
+    let meter_buffer = &session.meter_buffer;
+    let sample_rate = session.output_sample_rate;
+
     let mut g = AudioGraph::new();
     if tracks.is_empty() {
         let inp = g.add_node(GraphNode::Input(InputNode::new(Arc::clone(silent_buffer))));
@@ -213,6 +266,10 @@ fn build_session_graph(
     }
 }
 
+// -----------------------------------------------------------------------------
+// Paths
+// -----------------------------------------------------------------------------
+
 fn recording_path() -> PathBuf {
     let desktop = expand_tilde("~/Desktop");
     let filename = format!(
@@ -238,6 +295,20 @@ fn expand_tilde(path: &str) -> PathBuf {
     }
 }
 
+// -----------------------------------------------------------------------------
+// Display helpers
+// -----------------------------------------------------------------------------
+
+/// Parses 1-based track number; returns error message if out of range.
+fn parse_track_no(s: &str, num_tracks: usize) -> Result<usize, String> {
+    let n: usize = s.parse().map_err(|_| "Invalid track number.".to_string())?;
+    if (1..=num_tracks.max(1)).contains(&n) {
+        Ok(n)
+    } else {
+        Err(format!("Track number must be 1–{}.", num_tracks.max(1)))
+    }
+}
+
 fn source_display(source: &TrackSource) -> String {
     match source {
         TrackSource::None => "-".to_string(),
@@ -255,7 +326,10 @@ fn send_graph(cmd_tx: &capstan::command::CommandSender, compiled: CompiledGraph)
     let _ = cmd_tx.try_send(Command::SwapGraph(compiled));
 }
 
-/// Linear peak (0..=1 or higher) to dB. Uses a floor for near-silence.
+// -----------------------------------------------------------------------------
+// UI
+// -----------------------------------------------------------------------------
+
 fn peak_to_db(peak: f32) -> f32 {
     if peak <= 1e-10 {
         METER_DB_MIN
@@ -344,11 +418,6 @@ fn draw_header(
     Ok(())
 }
 
-const SUCCESS_PREFIX: &str = "  ✓ ";
-/// Zero-width space + "  " so warnings display as "  msg" (no symbol) in yellow.
-const WARNING_PREFIX: &str = "\u{200B}  ";
-const ERROR_PREFIX: &str = "  ✗ ";
-
 fn draw_history(
     stdout: &mut impl Write,
     history: &[String],
@@ -399,18 +468,347 @@ fn draw_history(
     Ok(())
 }
 
-#[derive(Clone, Copy)]
-enum StatusKind {
-    Success,
-    Warning,
-    Error,
-    Neutral,
+// -----------------------------------------------------------------------------
+// Command handling
+// -----------------------------------------------------------------------------
+
+fn handle_command(
+    session: &mut Session,
+    parts: &[&str],
+    host: &cpal::Host,
+    cmd_tx: &capstan::command::CommandSender,
+    silent_buffer: &Arc<dyn SampleSource + Send + Sync>,
+) -> CommandOutcome {
+    let mut session_changed = false;
+    let mut status_kind = StatusKind::Neutral;
+    let mut status_msg = String::new();
+    let mut quit = false;
+    let n = session.tracks.len();
+
+    match parts {
+        ["record"] => {
+            if session.recording {
+                status_kind = StatusKind::Warning;
+                status_msg = "Already recording. Press Enter to stop.".to_string();
+            } else {
+                let path = recording_path();
+                session.record_buffer = Some(Arc::new(RecordBuffer::new()));
+                session.record_buffer.as_ref().unwrap().set_armed(true);
+                if let Some(compiled) =
+                    build_session_graph(session, silent_buffer, session.record_buffer.clone())
+                {
+                    send_graph(cmd_tx, compiled);
+                    session.record_output_path = Some(path);
+                    session.recording = true;
+                    status_kind = StatusKind::Success;
+                    status_msg = "Recording... Press Enter to stop.".to_string();
+                } else {
+                    session.record_buffer.as_ref().unwrap().set_armed(false);
+                    session.record_buffer = None;
+                    status_kind = StatusKind::Error;
+                    status_msg = "Failed to compile graph for recording.".to_string();
+                }
+            }
+        }
+        ["quit" | "q"] => {
+            quit = true;
+        }
+        ["help" | "h" | "?"] => {
+            status_msg = HELP_MSG.to_string();
+        }
+        ["track", "create"] => {
+            session.tracks.push(Track {
+                source: TrackSource::None,
+                gain: 0.7,
+                delay_ms: None,
+                tremolo: None,
+                overdrive: None,
+            });
+            session_changed = true;
+            status_kind = StatusKind::Success;
+            status_msg = format!("Created track {}.", session.tracks.len());
+        }
+        ["track", "delete", no] => match parse_track_no(no, n) {
+            Ok(tn) => {
+                session.tracks.remove(tn - 1);
+                session_changed = true;
+                status_kind = StatusKind::Success;
+                status_msg = format!("Deleted track {}.", tn);
+            }
+            Err(e) => {
+                status_kind = StatusKind::Warning;
+                status_msg = e;
+            }
+        },
+        ["input", "--list" | "-l"] => match input_device_list(host) {
+            Ok(devices) => {
+                status_kind = StatusKind::Success;
+                status_msg = if devices.is_empty() {
+                    "(no input devices)".to_string()
+                } else {
+                    let s: String = devices
+                        .iter()
+                        .map(|d| format!("{}: {}", d.index, d.name))
+                        .collect::<Vec<_>>()
+                        .join("  |  ");
+                    if s.len() > 120 {
+                        format!("{}...", &s[..117])
+                    } else {
+                        s
+                    }
+                };
+            }
+            Err(e) => {
+                status_kind = StatusKind::Error;
+                status_msg = format!("List devices: {}", e);
+            }
+        },
+        ["input", track_no, "--device", dev] => {
+            if let (Ok(tn), Ok(d)) = (parse_track_no(track_no, n), dev.parse::<usize>()) {
+                match session.open_inputs.ensure_device(host, d) {
+                    Ok(_) => {
+                        session.tracks[tn - 1].source = TrackSource::Device(d);
+                        session_changed = true;
+                        status_kind = StatusKind::Success;
+                        status_msg = format!("Track {} → device {}.", tn, d);
+                    }
+                    Err(e) => {
+                        status_kind = StatusKind::Error;
+                        status_msg = format!("Failed to open device {}: {}", d, e);
+                    }
+                }
+            } else {
+                status_kind = StatusKind::Warning;
+                status_msg = "Usage: input <track_no> --device <index>".to_string();
+            }
+        }
+        ["input", track_no, "--sine", freq] => {
+            if let (Ok(tn), Ok(f)) = (parse_track_no(track_no, n), freq.parse::<f32>()) {
+                if (0.0..=20_000.0).contains(&f) {
+                    session.tracks[tn - 1].source = TrackSource::Sine { freq_hz: f };
+                    session_changed = true;
+                    status_kind = StatusKind::Success;
+                    status_msg = format!("Track {} → sine {} Hz.", tn, f);
+                } else {
+                    status_kind = StatusKind::Warning;
+                    status_msg = "Frequency must be 0–20000 Hz.".to_string();
+                }
+            } else {
+                status_kind = StatusKind::Warning;
+                status_msg = parse_track_no(track_no, n)
+                    .err()
+                    .unwrap_or_else(|| "Usage: input <track_no> --sine <freq_hz>".to_string());
+            }
+        }
+        _ if parts.len() >= 4 && parts[0] == "input" && parts[2] == "--file" => {
+            let path_str = parts[3..].join(" ");
+            if let Ok(tn) = parse_track_no(parts[1], n) {
+                let path = PathBuf::from(&path_str);
+                match load_wav_at_rate(&path, session.output_sample_rate) {
+                    Ok(samples) => {
+                        let buffer: Arc<dyn SampleSource + Send + Sync> =
+                            Arc::new(FilePlaybackBuffer::new(Arc::new(samples)));
+                        session.tracks[tn - 1].source = TrackSource::File { path, buffer };
+                        session_changed = true;
+                        status_kind = StatusKind::Success;
+                        status_msg = format!("Track {} → file {}.", tn, path_str);
+                    }
+                    Err(e) => {
+                        status_kind = StatusKind::Error;
+                        status_msg = format!("File load: {}", e);
+                    }
+                }
+            } else {
+                status_kind = StatusKind::Warning;
+                status_msg = parse_track_no(parts[1], n)
+                    .err()
+                    .unwrap_or_else(|| "Usage: input <track_no> --file <path>".to_string());
+            }
+        }
+        ["gain", level] => {
+            if let Ok(g) = level.parse::<f32>() {
+                session.master_gain = g.clamp(0.0, 2.0);
+                session_changed = true;
+                status_kind = StatusKind::Success;
+                status_msg = format!("Master gain set to {}.", session.master_gain);
+            } else {
+                status_msg = "Usage: gain <level>  or  gain <track_no> <level>".to_string();
+            }
+        }
+        ["gain", track_no, level] => {
+            if let (Ok(tn), Ok(g)) = (parse_track_no(track_no, n), level.parse::<f32>()) {
+                session.tracks[tn - 1].gain = g.clamp(0.0, 2.0);
+                session_changed = true;
+                status_kind = StatusKind::Success;
+                status_msg = format!("Track {} gain set to {}.", tn, session.tracks[tn - 1].gain);
+            } else {
+                status_kind = StatusKind::Warning;
+                status_msg = parse_track_no(track_no, n)
+                    .err()
+                    .unwrap_or_else(|| "Usage: gain <track_no> <level>".to_string());
+            }
+        }
+        ["echo", track_no, "none"] => match parse_track_no(track_no, n) {
+            Ok(tn) => {
+                session.tracks[tn - 1].delay_ms = None;
+                session_changed = true;
+                status_kind = StatusKind::Success;
+                status_msg = format!("Track {} echo removed.", tn);
+            }
+            Err(e) => {
+                status_kind = StatusKind::Warning;
+                status_msg = e;
+            }
+        },
+        ["echo", track_no, ms_str] => {
+            if let Ok(tn) = parse_track_no(track_no, n) {
+                if let Ok(ms) = ms_str.parse::<f32>() {
+                    if (0.0..=2000.0).contains(&ms) {
+                        session.tracks[tn - 1].delay_ms = Some(ms);
+                        session_changed = true;
+                        status_kind = StatusKind::Success;
+                        status_msg = format!("Track {} echo set to {:.0} ms.", tn, ms);
+                    } else {
+                        status_kind = StatusKind::Warning;
+                        status_msg = "Echo must be 0–2000 ms.".to_string();
+                    }
+                } else {
+                    status_msg = "Usage: echo <track_no> <ms> | echo <track_no> none".to_string();
+                }
+            } else {
+                status_kind = StatusKind::Warning;
+                status_msg = parse_track_no(track_no, n)
+                    .err()
+                    .unwrap_or_default();
+            }
+        }
+        ["tremolo", track_no, "none"] => match parse_track_no(track_no, n) {
+            Ok(tn) => {
+                session.tracks[tn - 1].tremolo = None;
+                session_changed = true;
+                status_kind = StatusKind::Success;
+                status_msg = format!("Track {} tremolo removed.", tn);
+            }
+            Err(e) => {
+                status_kind = StatusKind::Warning;
+                status_msg = e;
+            }
+        },
+        ["tremolo", track_no, rate_str, depth_str] => {
+            if let (Ok(tn), Ok(rate), Ok(depth)) = (
+                parse_track_no(track_no, n),
+                rate_str.parse::<f32>(),
+                depth_str.parse::<f32>(),
+            ) {
+                if (0.1..=20.0).contains(&rate) && (0.0..=1.0).contains(&depth) {
+                    session.tracks[tn - 1].tremolo = Some((rate, depth));
+                    session_changed = true;
+                    status_kind = StatusKind::Success;
+                    status_msg = format!("Track {} tremolo {:.1} Hz depth {:.2}.", tn, rate, depth);
+                } else {
+                    status_kind = StatusKind::Warning;
+                    status_msg = "Tremolo rate 0.1–20 Hz, depth 0–1.".to_string();
+                }
+            } else {
+                status_kind = StatusKind::Warning;
+                status_msg = parse_track_no(track_no, n).err().unwrap_or_else(|| {
+                    "Usage: tremolo <track_no> <rate_hz> <depth> | tremolo <track_no> none"
+                        .to_string()
+                });
+            }
+        }
+        ["overdrive", track_no, "none"] => match parse_track_no(track_no, n) {
+            Ok(tn) => {
+                session.tracks[tn - 1].overdrive = None;
+                session_changed = true;
+                status_kind = StatusKind::Success;
+                status_msg = format!("Track {} overdrive removed.", tn);
+            }
+            Err(e) => {
+                status_kind = StatusKind::Warning;
+                status_msg = e;
+            }
+        },
+        ["overdrive", track_no, amount_str] => {
+            if let (Ok(tn), Ok(amount)) = (parse_track_no(track_no, n), amount_str.parse::<f32>()) {
+                if (0.0..=5.0).contains(&amount) {
+                    session.tracks[tn - 1].overdrive = Some(amount);
+                    session_changed = true;
+                    status_kind = StatusKind::Success;
+                    status_msg = format!("Track {} overdrive {:.1}.", tn, amount);
+                } else {
+                    status_kind = StatusKind::Warning;
+                    status_msg = "Overdrive must be 0–5.".to_string();
+                }
+            } else {
+                status_kind = StatusKind::Warning;
+                status_msg = parse_track_no(track_no, n).err().unwrap_or_else(|| {
+                    "Usage: overdrive <track_no> <0-5> | overdrive <track_no> none".to_string()
+                });
+            }
+        }
+        _ => {
+            status_kind = StatusKind::Warning;
+            status_msg = "Unknown command. Type 'help' for commands.".to_string();
+        }
+    }
+
+    if session_changed {
+        session.meter_buffer = Some(Arc::new(MeterBuffer::new(session.tracks.len() + 1)));
+        if let Some(compiled) = build_session_graph(session, silent_buffer, None) {
+            send_graph(cmd_tx, compiled);
+        } else {
+            status_kind = StatusKind::Error;
+            status_msg = "Failed to compile graph.".to_string();
+        }
+    }
+
+    CommandOutcome {
+        status_kind,
+        status_msg,
+        quit,
+    }
 }
 
-/// Last 3 commands (each command + result = 2 lines), shown newest-first.
-const HISTORY_LINES: usize = 6;
+// -----------------------------------------------------------------------------
+// Recording
+// -----------------------------------------------------------------------------
 
-const COMMAND_HISTORY_CAP: usize = 50;
+fn stop_recording_and_save(
+    session: &mut Session,
+    cmd_tx: &capstan::command::CommandSender,
+    silent_buffer: &Arc<dyn SampleSource + Send + Sync>,
+    history: &mut Vec<String>,
+) -> std::io::Result<()> {
+    if let (Some(rb), Some(path)) = (
+        session.record_buffer.take(),
+        session.record_output_path.take(),
+    ) {
+        rb.set_armed(false);
+        thread::sleep(Duration::from_millis(150));
+        let samples = rb.drain();
+        let _ = path.parent().map(std::fs::create_dir_all);
+        match write_wav(&path, &samples, session.output_sample_rate) {
+            Ok(()) => {
+                history.push("> record".to_string());
+                history.push(format!("{}Saved to {}", SUCCESS_PREFIX, path.display()));
+            }
+            Err(e) => {
+                history.push("> record".to_string());
+                history.push(format!("{}Write WAV: {}", ERROR_PREFIX, e));
+            }
+        }
+    }
+    session.recording = false;
+    if let Some(compiled) = build_session_graph(session, silent_buffer, None) {
+        send_graph(cmd_tx, compiled);
+    }
+    Ok(())
+}
+
+// -----------------------------------------------------------------------------
+// Main
+// -----------------------------------------------------------------------------
 
 fn main() -> std::io::Result<()> {
     let cli = Cli::parse();
@@ -426,39 +824,30 @@ fn main() -> std::io::Result<()> {
         let _ = audio_result_tx.send(result);
     });
 
-    let mut output_sample_rate = capstan::default_output_sample_rate().unwrap_or(48_000);
-
-    let mut tracks: Vec<Track> = Vec::new();
-    let mut master_gain: f32 = 0.8;
-    let mut open_inputs = OpenInputs::new();
     let silent_buffer: Arc<dyn SampleSource + Send + Sync> = Arc::new(InputSampleBuffer::new(2048));
-    let mut meter_buffer = Some(Arc::new(MeterBuffer::new(tracks.len() + 1)));
+    let mut session = Session {
+        tracks: Vec::new(),
+        master_gain: 0.8,
+        open_inputs: OpenInputs::new(),
+        meter_buffer: Some(Arc::new(MeterBuffer::new(1))),
+        output_sample_rate: capstan::default_output_sample_rate().unwrap_or(48_000),
+        recording: false,
+        record_buffer: None,
+        record_output_path: None,
+    };
+
     let mut input_line = String::new();
-    let mut recording = false;
-    let mut record_buffer: Option<Arc<RecordBuffer>> = None;
-    let mut record_output_path: Option<PathBuf> = None;
-    let mut cursor_pos: usize = 0; // index into input_line (0..=len)
-    let mut status_msg: String;
+    let mut cursor_pos: usize = 0;
     let mut history: Vec<String> = Vec::new();
     let mut command_history: Vec<String> = Vec::new();
     let mut history_index: Option<usize> = None;
 
     enable_raw_mode().map_err(std::io::Error::other)?;
     let mut stdout = io::stdout();
-
     execute!(stdout, Clear(ClearType::All), MoveTo(0, 0)).map_err(std::io::Error::other)?;
     stdout.flush()?;
 
-    // Initial graph with master meter (1 slot when no tracks).
-    if let Some(compiled) = build_session_graph(
-        &tracks,
-        &open_inputs,
-        &silent_buffer,
-        master_gain,
-        meter_buffer.clone(),
-        output_sample_rate,
-        None,
-    ) {
+    if let Some(compiled) = build_session_graph(&session, &silent_buffer, None) {
         send_graph(&cmd_tx, compiled);
     }
 
@@ -470,12 +859,19 @@ fn main() -> std::io::Result<()> {
             return Err(std::io::Error::other(e.to_string()));
         }
 
-        let pr = prompt_row(&tracks);
-        let peaks = meter_buffer
+        let pr = prompt_row(&session.tracks);
+        let peaks = session
+            .meter_buffer
             .as_ref()
             .map(|m| m.read_peaks())
             .unwrap_or_default();
-        draw_header(&mut stdout, &tracks, &peaks, master_gain, pr)?;
+        draw_header(
+            &mut stdout,
+            &session.tracks,
+            &peaks,
+            session.master_gain,
+            pr,
+        )?;
         execute!(stdout, MoveTo(0, pr), Clear(ClearType::CurrentLine))?;
         write!(stdout, "> {}", input_line)?;
         draw_history(&mut stdout, &history, pr + 1, HISTORY_LINES)?;
@@ -490,504 +886,38 @@ fn main() -> std::io::Result<()> {
                 }
                 match ke.code {
                     KeyCode::Enter => {
-                        if recording {
-                            if let (Some(rb), Some(path)) =
-                                (record_buffer.take(), record_output_path.take())
-                            {
-                                rb.set_armed(false);
-                                thread::sleep(Duration::from_millis(150));
-                                let samples = rb.drain();
-                                let _ = path.parent().map(std::fs::create_dir_all);
-                                match write_wav(&path, &samples, output_sample_rate) {
-                                    Ok(()) => {
-                                        history.push("> record".to_string());
-                                        history.push(format!(
-                                            "{}Saved to {}",
-                                            SUCCESS_PREFIX,
-                                            path.display()
-                                        ));
-                                    }
-                                    Err(e) => {
-                                        history.push("> record".to_string());
-                                        history.push(format!("{}Write WAV: {}", ERROR_PREFIX, e));
-                                    }
-                                }
-                            }
-                            recording = false;
-                            if let Some(compiled) = build_session_graph(
-                                &tracks,
-                                &open_inputs,
+                        if session.recording {
+                            stop_recording_and_save(
+                                &mut session,
+                                &cmd_tx,
                                 &silent_buffer,
-                                master_gain,
-                                meter_buffer.clone(),
-                                output_sample_rate,
-                                None,
-                            ) {
-                                send_graph(&cmd_tx, compiled);
-                            }
+                                &mut history,
+                            )?;
                         } else {
                             let line = input_line.trim().to_string();
                             input_line.clear();
                             cursor_pos = 0;
                             if !line.is_empty() {
                                 let parts: Vec<&str> = line.split_ascii_whitespace().collect();
-                                let mut session_changed = false;
-                                let mut status_kind = StatusKind::Neutral;
-
-                                match parts.as_slice() {
-                                    ["record"] => {
-                                        if recording {
-                                            status_kind = StatusKind::Warning;
-                                            status_msg = "Already recording. Press Enter to stop."
-                                                .to_string();
-                                        } else {
-                                            let path = recording_path();
-                                            record_buffer = Some(Arc::new(RecordBuffer::new()));
-                                            record_buffer.as_ref().unwrap().set_armed(true);
-                                            if let Some(compiled) = build_session_graph(
-                                                &tracks,
-                                                &open_inputs,
-                                                &silent_buffer,
-                                                master_gain,
-                                                meter_buffer.clone(),
-                                                output_sample_rate,
-                                                record_buffer.clone(),
-                                            ) {
-                                                send_graph(&cmd_tx, compiled);
-                                                record_output_path = Some(path);
-                                                recording = true;
-                                                session_changed = false; // we already sent the graph
-                                                status_kind = StatusKind::Success;
-                                                status_msg =
-                                                    "Recording... Press Enter to stop.".to_string();
-                                            } else {
-                                                record_buffer.as_ref().unwrap().set_armed(false);
-                                                record_buffer = None;
-                                                status_kind = StatusKind::Error;
-                                                status_msg =
-                                                    "Failed to compile graph for recording."
-                                                        .to_string();
-                                            }
-                                        }
-                                    }
-                                    ["quit" | "q"] => {
-                                        let _ = cmd_tx.try_send(Command::Quit);
-                                        let _ = shutdown_tx.send(());
-                                        disable_raw_mode().map_err(std::io::Error::other)?;
-                                        let _ = audio_handle.join();
-                                        if let Ok(Err(e)) = audio_result_rx.recv() {
-                                            eprintln!("Audio error: {}", e);
-                                        }
-                                        execute!(stdout, Clear(ClearType::All), MoveTo(0, 0))
-                                            .map_err(std::io::Error::other)?;
-                                        stdout.flush()?;
-                                        return Ok(());
-                                    }
-                                    ["help" | "h" | "?"] => {
-                                        status_msg = "track create | track delete <no> | input <tn> ... | gain [tn] <lvl> | echo <tn> <ms>|none | tremolo <tn> <rate> <depth>|none | overdrive <tn> <0-5>|none | record | quit".to_string();
-                                    }
-
-                                    ["track", "create"] => {
-                                        tracks.push(Track {
-                                            source: TrackSource::None,
-                                            gain: 0.7,
-                                            delay_ms: None,
-                                            tremolo: None,
-                                            overdrive: None,
-                                        });
-                                        session_changed = true;
-                                        status_kind = StatusKind::Success;
-                                        status_msg = format!("Created track {}.", tracks.len());
-                                    }
-                                    ["track", "delete", no] => {
-                                        if let Ok(n) = no.parse::<usize>() {
-                                            if n >= 1 && n <= tracks.len() {
-                                                tracks.remove(n - 1);
-                                                session_changed = true;
-                                                status_kind = StatusKind::Success;
-                                                status_msg = format!("Deleted track {}.", n);
-                                            } else {
-                                                status_kind = StatusKind::Warning;
-                                                status_msg = format!(
-                                                    "Track number must be 1–{}.",
-                                                    tracks.len().max(1)
-                                                );
-                                            }
-                                        } else {
-                                            status_msg =
-                                                "Usage: track delete <track_no>".to_string();
-                                        }
-                                    }
-
-                                    ["input", "--list" | "-l"] => match input_device_list(&host) {
-                                        Ok(devices) => {
-                                            status_kind = StatusKind::Success;
-                                            if devices.is_empty() {
-                                                status_msg = "(no input devices)".to_string();
-                                            } else {
-                                                status_msg = devices
-                                                    .iter()
-                                                    .map(|d| format!("{}: {}", d.index, d.name))
-                                                    .collect::<Vec<_>>()
-                                                    .join("  |  ");
-                                                if status_msg.len() > 120 {
-                                                    status_msg =
-                                                        format!("{}...", &status_msg[..117]);
-                                                }
-                                            }
-                                        }
-                                        Err(e) => {
-                                            status_kind = StatusKind::Error;
-                                            status_msg = format!("List devices: {}", e);
-                                        }
-                                    },
-                                    ["input", track_no, "--device", dev] => {
-                                        if let (Ok(tn), Ok(d)) =
-                                            (track_no.parse::<usize>(), dev.parse::<usize>())
-                                        {
-                                            if tn >= 1 && tn <= tracks.len() {
-                                                match open_inputs.ensure_device(&host, d) {
-                                                    Ok(_) => {
-                                                        tracks[tn - 1].source =
-                                                            TrackSource::Device(d);
-                                                        session_changed = true;
-                                                        status_kind = StatusKind::Success;
-                                                        status_msg =
-                                                            format!("Track {} → device {}.", tn, d);
-                                                    }
-                                                    Err(e) => {
-                                                        status_kind = StatusKind::Error;
-                                                        status_msg = format!(
-                                                            "Failed to open device {}: {}",
-                                                            d, e
-                                                        );
-                                                    }
-                                                }
-                                            } else {
-                                                status_kind = StatusKind::Warning;
-                                                status_msg = format!(
-                                                    "Track number must be 1–{}.",
-                                                    tracks.len().max(1)
-                                                );
-                                            }
-                                        } else {
-                                            status_msg = "Usage: input <track_no> --device <index>"
-                                                .to_string();
-                                        }
-                                    }
-                                    ["input", track_no, "--sine", freq] => {
-                                        if let (Ok(tn), Ok(f)) =
-                                            (track_no.parse::<usize>(), freq.parse::<f32>())
-                                        {
-                                            if tn >= 1
-                                                && tn <= tracks.len()
-                                                && f > 0.0
-                                                && f <= 20_000.0
-                                            {
-                                                tracks[tn - 1].source =
-                                                    TrackSource::Sine { freq_hz: f };
-                                                session_changed = true;
-                                                status_kind = StatusKind::Success;
-                                                status_msg =
-                                                    format!("Track {} → sine {} Hz.", tn, f);
-                                            } else if tn < 1 || tn > tracks.len() {
-                                                status_kind = StatusKind::Warning;
-                                                status_msg = format!(
-                                                    "Track number must be 1–{}.",
-                                                    tracks.len().max(1)
-                                                );
-                                            } else {
-                                                status_kind = StatusKind::Warning;
-                                                status_msg =
-                                                    "Frequency must be 0–20000 Hz.".to_string();
-                                            }
-                                        } else {
-                                            status_msg = "Usage: input <track_no> --sine <freq_hz>"
-                                                .to_string();
-                                        }
-                                    }
-                                    _ if parts.len() >= 4
-                                        && parts[0] == "input"
-                                        && parts[2] == "--file" =>
-                                    {
-                                        let path_str = parts[3..].join(" ");
-                                        if let Ok(tn) = parts[1].parse::<usize>() {
-                                            if tn >= 1 && tn <= tracks.len() {
-                                                let path = PathBuf::from(&path_str);
-                                                match load_wav_at_rate(&path, output_sample_rate) {
-                                                    Ok(samples) => {
-                                                        let buffer: Arc<
-                                                            dyn SampleSource + Send + Sync,
-                                                        > = Arc::new(FilePlaybackBuffer::new(
-                                                            Arc::new(samples),
-                                                        ));
-                                                        tracks[tn - 1].source =
-                                                            TrackSource::File { path, buffer };
-                                                        session_changed = true;
-                                                        status_kind = StatusKind::Success;
-                                                        status_msg = format!(
-                                                            "Track {} → file {}.",
-                                                            tn, path_str
-                                                        );
-                                                    }
-                                                    Err(e) => {
-                                                        status_kind = StatusKind::Error;
-                                                        status_msg = format!("File load: {}", e);
-                                                    }
-                                                }
-                                            } else {
-                                                status_kind = StatusKind::Warning;
-                                                status_msg = format!(
-                                                    "Track number must be 1–{}.",
-                                                    tracks.len().max(1)
-                                                );
-                                            }
-                                        } else {
-                                            status_msg =
-                                                "Usage: input <track_no> --file <path>".to_string();
-                                        }
-                                    }
-
-                                    ["gain", level] => {
-                                        if let Ok(g) = level.parse::<f32>() {
-                                            master_gain = g.clamp(0.0, 2.0);
-                                            session_changed = true;
-                                            status_kind = StatusKind::Success;
-                                            status_msg =
-                                                format!("Master gain set to {}.", master_gain);
-                                        } else {
-                                            status_msg =
-                                                "Usage: gain <level>  or  gain <track_no> <level>"
-                                                    .to_string();
-                                        }
-                                    }
-                                    ["gain", track_no, level] => {
-                                        if let (Ok(tn), Ok(g)) =
-                                            (track_no.parse::<usize>(), level.parse::<f32>())
-                                        {
-                                            if tn >= 1 && tn <= tracks.len() {
-                                                tracks[tn - 1].gain = g.clamp(0.0, 2.0);
-                                                session_changed = true;
-                                                status_kind = StatusKind::Success;
-                                                status_msg = format!(
-                                                    "Track {} gain set to {}.",
-                                                    tn,
-                                                    tracks[tn - 1].gain
-                                                );
-                                            } else {
-                                                status_kind = StatusKind::Warning;
-                                                status_msg = format!(
-                                                    "Track number must be 1–{}.",
-                                                    tracks.len().max(1)
-                                                );
-                                            }
-                                        } else {
-                                            status_msg =
-                                                "Usage: gain <track_no> <level>".to_string();
-                                        }
-                                    }
-
-                                    ["echo", track_no, "none"] => {
-                                        if let Ok(tn) = track_no.parse::<usize>() {
-                                            if tn >= 1 && tn <= tracks.len() {
-                                                tracks[tn - 1].delay_ms = None;
-                                                session_changed = true;
-                                                status_kind = StatusKind::Success;
-                                                status_msg = format!("Track {} echo removed.", tn);
-                                            } else {
-                                                status_kind = StatusKind::Warning;
-                                                status_msg = format!(
-                                                    "Track number must be 1–{}.",
-                                                    tracks.len().max(1)
-                                                );
-                                            }
-                                        } else {
-                                            status_msg = "Usage: echo <track_no> <ms> | echo <track_no> none"
-                                                .to_string();
-                                        }
-                                    }
-                                    ["echo", track_no, ms_str] => {
-                                        if let Ok(tn) = track_no.parse::<usize>() {
-                                            if tn >= 1 && tn <= tracks.len() {
-                                                if let Ok(ms) = ms_str.parse::<f32>() {
-                                                    if (0.0..=2000.0).contains(&ms) {
-                                                        tracks[tn - 1].delay_ms = Some(ms);
-                                                        session_changed = true;
-                                                        status_kind = StatusKind::Success;
-                                                        status_msg = format!(
-                                                            "Track {} echo set to {:.0} ms.",
-                                                            tn, ms
-                                                        );
-                                                    } else {
-                                                        status_kind = StatusKind::Warning;
-                                                        status_msg =
-                                                            "Echo must be 0–2000 ms.".to_string();
-                                                    }
-                                                } else {
-                                                    status_msg = "Usage: echo <track_no> <ms> | echo <track_no> none"
-                                                        .to_string();
-                                                }
-                                            } else {
-                                                status_kind = StatusKind::Warning;
-                                                status_msg = format!(
-                                                    "Track number must be 1–{}.",
-                                                    tracks.len().max(1)
-                                                );
-                                            }
-                                        } else {
-                                            status_msg = "Usage: echo <track_no> <ms> | echo <track_no> none"
-                                                .to_string();
-                                        }
-                                    }
-
-                                    ["tremolo", track_no, "none"] => {
-                                        if let Ok(tn) = track_no.parse::<usize>() {
-                                            if (1..=tracks.len()).contains(&tn) {
-                                                tracks[tn - 1].tremolo = None;
-                                                session_changed = true;
-                                                status_kind = StatusKind::Success;
-                                                status_msg =
-                                                    format!("Track {} tremolo removed.", tn);
-                                            } else {
-                                                status_kind = StatusKind::Warning;
-                                                status_msg = format!(
-                                                    "Track number must be 1–{}.",
-                                                    tracks.len().max(1)
-                                                );
-                                            }
-                                        } else {
-                                            status_msg =
-                                                "Usage: tremolo <track_no> <rate_hz> <depth> | tremolo <track_no> none"
-                                                    .to_string();
-                                        }
-                                    }
-                                    ["tremolo", track_no, rate_str, depth_str] => {
-                                        if let (Ok(tn), Ok(rate), Ok(depth)) = (
-                                            track_no.parse::<usize>(),
-                                            rate_str.parse::<f32>(),
-                                            depth_str.parse::<f32>(),
-                                        ) {
-                                            if (1..=tracks.len()).contains(&tn) {
-                                                if (0.1..=20.0).contains(&rate)
-                                                    && (0.0..=1.0).contains(&depth)
-                                                {
-                                                    tracks[tn - 1].tremolo = Some((rate, depth));
-                                                    session_changed = true;
-                                                    status_kind = StatusKind::Success;
-                                                    status_msg = format!(
-                                                        "Track {} tremolo {:.1} Hz depth {:.2}.",
-                                                        tn, rate, depth
-                                                    );
-                                                } else {
-                                                    status_kind = StatusKind::Warning;
-                                                    status_msg =
-                                                        "Tremolo rate 0.1–20 Hz, depth 0–1."
-                                                            .to_string();
-                                                }
-                                            } else {
-                                                status_kind = StatusKind::Warning;
-                                                status_msg = format!(
-                                                    "Track number must be 1–{}.",
-                                                    tracks.len().max(1)
-                                                );
-                                            }
-                                        } else {
-                                            status_msg =
-                                                "Usage: tremolo <track_no> <rate_hz> <depth> | tremolo <track_no> none"
-                                                    .to_string();
-                                        }
-                                    }
-
-                                    ["overdrive", track_no, "none"] => {
-                                        if let Ok(tn) = track_no.parse::<usize>() {
-                                            if (1..=tracks.len()).contains(&tn) {
-                                                tracks[tn - 1].overdrive = None;
-                                                session_changed = true;
-                                                status_kind = StatusKind::Success;
-                                                status_msg =
-                                                    format!("Track {} overdrive removed.", tn);
-                                            } else {
-                                                status_kind = StatusKind::Warning;
-                                                status_msg = format!(
-                                                    "Track number must be 1–{}.",
-                                                    tracks.len().max(1)
-                                                );
-                                            }
-                                        } else {
-                                            status_msg =
-                                                "Usage: overdrive <track_no> <0-5> | overdrive <track_no> none"
-                                                    .to_string();
-                                        }
-                                    }
-                                    ["overdrive", track_no, amount_str] => {
-                                        if let (Ok(tn), Ok(amount)) =
-                                            (track_no.parse::<usize>(), amount_str.parse::<f32>())
-                                        {
-                                            if (1..=tracks.len()).contains(&tn) {
-                                                if (0.0..=5.0).contains(&amount) {
-                                                    tracks[tn - 1].overdrive = Some(amount);
-                                                    session_changed = true;
-                                                    status_kind = StatusKind::Success;
-                                                    status_msg = format!(
-                                                        "Track {} overdrive {:.1}.",
-                                                        tn, amount
-                                                    );
-                                                } else {
-                                                    status_kind = StatusKind::Warning;
-                                                    status_msg =
-                                                        "Overdrive must be 0–5.".to_string();
-                                                }
-                                            } else {
-                                                status_kind = StatusKind::Warning;
-                                                status_msg = format!(
-                                                    "Track number must be 1–{}.",
-                                                    tracks.len().max(1)
-                                                );
-                                            }
-                                        } else {
-                                            status_msg =
-                                                "Usage: overdrive <track_no> <0-5> | overdrive <track_no> none"
-                                                    .to_string();
-                                        }
-                                    }
-
-                                    _ => {
-                                        status_kind = StatusKind::Warning;
-                                        status_msg = "Unknown command. Type 'help' for commands."
-                                            .to_string();
-                                    }
-                                }
-
-                                if session_changed {
-                                    // One slot per track + one for master (always shown).
-                                    meter_buffer =
-                                        Some(Arc::new(MeterBuffer::new(tracks.len() + 1)));
-                                    if let Some(compiled) = build_session_graph(
-                                        &tracks,
-                                        &open_inputs,
-                                        &silent_buffer,
-                                        master_gain,
-                                        meter_buffer.clone(),
-                                        output_sample_rate,
-                                        None,
-                                    ) {
-                                        send_graph(&cmd_tx, compiled);
-                                    } else {
-                                        status_kind = StatusKind::Error;
-                                        status_msg = "Failed to compile graph.".to_string();
-                                    }
-                                }
-
+                                let outcome = handle_command(
+                                    &mut session,
+                                    &parts,
+                                    &host,
+                                    &cmd_tx,
+                                    &silent_buffer,
+                                );
                                 history.push(format!("> {}", line));
-                                let result_line = match status_kind {
+                                let result_line = match outcome.status_kind {
                                     StatusKind::Success => {
-                                        format!("{}{}", SUCCESS_PREFIX, status_msg)
+                                        format!("{}{}", SUCCESS_PREFIX, outcome.status_msg)
                                     }
                                     StatusKind::Warning => {
-                                        format!("{}{}", WARNING_PREFIX, status_msg)
+                                        format!("{}{}", WARNING_PREFIX, outcome.status_msg)
                                     }
-                                    StatusKind::Error => format!("{}{}", ERROR_PREFIX, status_msg),
-                                    StatusKind::Neutral => format!("  {}", status_msg),
+                                    StatusKind::Error => {
+                                        format!("{}{}", ERROR_PREFIX, outcome.status_msg)
+                                    }
+                                    StatusKind::Neutral => format!("  {}", outcome.status_msg),
                                 };
                                 history.push(result_line);
                                 command_history.push(line);
@@ -995,6 +925,20 @@ fn main() -> std::io::Result<()> {
                                     command_history.remove(0);
                                 }
                                 history_index = None;
+
+                                if outcome.quit {
+                                    let _ = cmd_tx.try_send(Command::Quit);
+                                    let _ = shutdown_tx.send(());
+                                    disable_raw_mode().map_err(std::io::Error::other)?;
+                                    let _ = audio_handle.join();
+                                    if let Ok(Err(e)) = audio_result_rx.recv() {
+                                        eprintln!("Audio error: {}", e);
+                                    }
+                                    execute!(stdout, Clear(ClearType::All), MoveTo(0, 0))
+                                        .map_err(std::io::Error::other)?;
+                                    stdout.flush()?;
+                                    return Ok(());
+                                }
                             }
                         }
                     }
@@ -1005,19 +949,20 @@ fn main() -> std::io::Result<()> {
                         cursor_pos = (cursor_pos + 1).min(input_line.len());
                     }
                     KeyCode::Up => {
-                        if command_history.is_empty() {
-                            // no-op
-                        } else if let Some(i) = history_index {
-                            if i + 1 < command_history.len() {
-                                history_index = Some(i + 1);
-                                input_line =
-                                    command_history[command_history.len() - 1 - (i + 1)].clone();
+                        if !command_history.is_empty() {
+                            if let Some(i) = history_index {
+                                if i + 1 < command_history.len() {
+                                    history_index = Some(i + 1);
+                                    input_line = command_history
+                                        [command_history.len() - 1 - (i + 1)]
+                                        .clone();
+                                    cursor_pos = input_line.len();
+                                }
+                            } else {
+                                history_index = Some(0);
+                                input_line = command_history.last().cloned().unwrap_or_default();
                                 cursor_pos = input_line.len();
                             }
-                        } else {
-                            history_index = Some(0);
-                            input_line = command_history.last().cloned().unwrap_or_default();
-                            cursor_pos = input_line.len();
                         }
                     }
                     KeyCode::Down => {
@@ -1052,7 +997,7 @@ fn main() -> std::io::Result<()> {
 
         while let Some(evt) = evt_rx.try_recv() {
             if let capstan::event::Event::StreamStarted(sr) = evt {
-                output_sample_rate = sr;
+                session.output_sample_rate = sr;
                 history.push(format!("{}Output sample rate: {} Hz", SUCCESS_PREFIX, sr));
             }
         }
