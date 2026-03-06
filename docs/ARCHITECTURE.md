@@ -70,14 +70,14 @@ Inputs are just nodes in the Audio Graph that generate samples. There are three 
 
 Device and File inputs use the **SampleSource** trait via **InputNode**. Sample sources provide a `read_block` method that fills the output buffer. Each type implements this trait differently:
 
-- **InputSampleBuffer** — A lock-free SPSC buffer. **Producer**: the input stream callback from CPAL. **Consumer**: the graph's InputNode in the output callback. On overflow, oldest samples are dropped.
+- **InputSampleBuffer** — A lock-free SPSC buffer. _Producer_: the input stream callback from CPAL. _Consumer_: the graph's InputNode in the output callback. On overflow, oldest samples are dropped.
 
 - **FilePlaybackBuffer** — Stores the whole file in memory as mono samples at the output sample rate. The audio graph reads from it directly. Using one thread ensures no rate mismatch or overflow. Memory is loaded via the _File Feeder_.
 
 **File Feeder** - Loads WAV files and resamples them for use with file-playback inputs.
 
-- **load_wav_at_rate(path, target_sample_rate)** — Load WAV as mono f32, resample to target rate. Use with `FilePlaybackBuffer` for file tracks.
-- **resample_to_rate(mono, file_rate, target_rate)** — Resample a mono buffer.
+- `load_wav_at_rate(path, target_sample_rate)` Loads a WAV file as mono f32, resamples it to the target rate and returns a buffer. Use with _FilePlaybackBuffer_ for file tracks.
+- `resample_to_rate(mono, file_rate, target_rate)` Resamples a mono buffer.
 
 The _StreamStarted(sample_rate)_ event is used to set the target rate so the file matches the output device.
 
@@ -87,16 +87,29 @@ Meter taps are used to report the peak level of nodes in the audio graph to the 
 
 **MeterBuffer**: A fixed SPSC buffer holding one f32 (peak) per tap. Typically one tap is used per gain node in the audio graph and one for the master output.
 
-- **MeterBuffer::new(num_taps)** — Creates a meter buffer with the given number of taps.
-- **MeterBuffer::write_peak(slot, value)** — Writes the peak level to the given slot. Called from the audio thread after processing a block.
-- **MeterBuffer::read_peaks()** — Reads all current peak levels. Called from the control thread to get the peak levels for UI.
+- `MeterBuffer::new(num_taps)` Creates a meter buffer with the given number of taps.
+- `MeterBuffer::write_peak(slot, value)` Writes the peak level to the given slot. Called from the audio thread after processing a block.
+- `MeterBuffer::read_peaks()` Reads all current peak levels. Called from the control thread to get the peak levels for UI.
 
-**compile_with_meter(frame_count, Some((tap_indices, meter_buffer)))** — After each `process()` call, **CompiledGraph** computes the peak of each tapped scratch buffer and writes it to the corresponding MeterBuffer slot.
+`compile_with_meter(frame_count, Some((tap_indices, meter_buffer)))`
+At the end of each callback the compiled graph computes the peak of each tapped buffer and writes it to the corresponding MeterBuffer slot.
 
 ## Devices
 
 The CPAL and stream lifecycle stay inside the crate. The application is responsible for choosing the device and keeping the Stream alive for as long as input should be captured.
 
-- **input_device_list(host)** → `Vec<InputDeviceInfo>` (index, name). Use index with open_input_stream.
+- `input_device_list(host)` Returns an indexed list of input devices.
+- `open_input_stream(host, device_index, buffer)` Opens an input stream for the specified device and writes the first channel into the given buffer.
 
-- **open_input_stream(host, device_index, buffer)** — Opens that input device, F32, low-latency config; callback writes first channel into the given **InputSampleBuffer**.
+## Audio Graph Nodes
+
+The graph is built from these node types:
+
+| GraphNode  | Type          | Role                                                                                         |
+| ---------- | ------------- | -------------------------------------------------------------------------------------------- |
+| **Sine**   | SineGenerator | Tone at a given frequency. Phase is continuous across blocks.                                |
+| **Gain**   | GainProcessor | Linear gain (1.0 = unity, 0.0 = silence).                                                    |
+| **Mixer**  | Mixer         | Sums N inputs with per-input linear gain.                                                    |
+| **Input**  | InputNode     | Reads from a **SampleSource** (device ring buffer or file playback buffer).                  |
+| **Delay**  | DelayLine     | One input, one output; delay time in ms. Circular buffer; set via `set_delay_ms`.            |
+| **Biquad** | BiquadFilter  | Lowpass or highpass. Direct Form I; `lowpass(sample_rate, cutoff_hz, q)` or `highpass(...)`. |
