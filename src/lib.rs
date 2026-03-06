@@ -1,11 +1,6 @@
 //! Capstan — real-time audio processing library. Audio types (AudioBuffer, Processor, graph, etc.)
 //! live in modules under this crate.
 //!
-//! ## Examples
-//!
-//! See the `daw` example for a full CLI-based DAW that drives the engine via stdin:
-//! `cargo run --example daw`.
-//!
 //! ## Latency
 //! End-to-end latency is dominated by **buffer size**, not by CPAL. The callback is invoked
 //! once per buffer; at 48 kHz, 128 frames ≈ 2.7 ms, 256 ≈ 5.3 ms. We request a low-latency
