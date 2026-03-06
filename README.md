@@ -8,25 +8,64 @@ Licensed under the [MIT License](LICENSE).
 
 ## Quick start
 
-```bash
-cargo build
-cargo test
-cargo bench          # graph compile and ring buffer throughput
-cargo run --example daw
-cargo run --example memo
+Play a 440 Hz tone for 2 seconds, then exit. Shows the core flow: channels → `run_audio` in a thread → build graph → `SwapGraph` → quit.
+
+```rust,no_run
+use capstan::command::{command_channel, Command};
+use capstan::event::event_channel;
+use capstan::graph::{AudioGraph, GraphNode};
+use capstan::nodes::{GainProcessor, SineGenerator};
+use capstan::run_audio;
+use std::thread;
+use std::time::Duration;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let (cmd_tx, cmd_rx) = command_channel(64);
+    let (evt_tx, evt_rx) = event_channel(64);
+    let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel();
+
+    let audio_handle = thread::spawn(move || {
+        run_audio(cmd_rx, evt_tx, shutdown_rx, None).ok()
+    });
+
+    // Wait for stream to start so we know the sample rate (optional; 48_000 is a safe default).
+    let sample_rate = evt_rx.recv().ok().and_then(|e| {
+        if let capstan::event::Event::StreamStarted(r) = e { Some(r) } else { None }
+    }).unwrap_or(48_000);
+
+    let mut graph = AudioGraph::new();
+    let sine = graph.add_node(GraphNode::Sine(SineGenerator::new(440.0, sample_rate)));
+    let gain = graph.add_node(GraphNode::Gain(GainProcessor::new(0.3)));
+    graph.add_edge(sine, gain);
+    let compiled = graph.compile(128)?;
+    let _ = cmd_tx.try_send(Command::SwapGraph(compiled));
+
+    thread::sleep(Duration::from_secs(2));
+
+    let _ = cmd_tx.try_send(Command::Quit);
+    let _ = shutdown_tx.send(());
+    let _ = audio_handle.join();
+    Ok(())
+}
 ```
 
-### Example - Digital Audio Workstation (DAW) CLI
+## Example applications
 
-A CLI-based mini DAW with multiple tracks. Tracks can take input from a device, sine oscillator, or WAV file. Gain can be set per-track and monitored with live ASCII level meters.
+### Digital Audio Workstation (DAW) CLI
 
-Run with `cargo run --example daw`.
+A CLI-based mini DAW with multiple tracks. Tracks can take input from a device, sine oscillator, or WAV file. Tracks have gain, echo, tremolo, and overdrive settings, and live ASCII level meters.
 
-### Example - Memo CLI
+```bash
+cargo run --example daw
+```
 
-A simple recorder from the default input. Records to a timestamped WAV file.
+### Memo Recorder CLI
 
-Run with `cargo run --example memo`.
+A simple recorder from the default input. Records to a timestamped WAV file on the Desktop.
+
+```bash
+cargo run --example memo
+```
 
 ## Documentation
 
@@ -34,9 +73,31 @@ Run with `cargo run --example memo`.
 - **[docs/DESIGN.md](docs/DESIGN.md)** — Why: two threads, lock-free, compiled graph, pull-based file playback.
 - **[docs/PERFORMANCE.md](docs/PERFORMANCE.md)** — Performance and limits: audio-thread rules, callback size, graph size, ring buffer capacities.
 
-## Pre-commit (format + lint)
+## Development
 
-To run `cargo fmt` and `cargo clippy` before every commit, use the git hook (one-time setup):
+**Build and test**
+
+```bash
+cargo build
+cargo test
+```
+
+**Benchmarks** (graph compile and ring buffer throughput)
+
+```bash
+cargo bench
+```
+
+**Run examples**
+
+```bash
+cargo run --example daw
+cargo run --example memo
+```
+
+**Pre-commit (format + lint)**
+
+One-time setup to run `cargo fmt` and `cargo clippy` before every commit:
 
 ```bash
 git config core.hooksPath .githooks
