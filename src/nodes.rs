@@ -248,6 +248,86 @@ impl Processor for Echo {
     }
 }
 
+/// Tremolo: periodic volume modulation (LFO). output = input * (1 - depth + depth * lfo).
+/// lfo is a sine in 0..1 so gain varies between (1-depth) and 1.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Tremolo {
+    phase: f32,
+    /// LFO rate in Hz (e.g. 2–10).
+    pub rate_hz: f32,
+    sample_rate: u32,
+    /// Depth 0..=1. 0 = no tremolo, 1 = full (gain 0 to 1).
+    pub depth: f32,
+}
+
+impl Tremolo {
+    pub fn new(rate_hz: f32, sample_rate: u32) -> Self {
+        Tremolo {
+            phase: 0.0,
+            rate_hz,
+            sample_rate,
+            depth: 0.5,
+        }
+    }
+}
+
+impl Processor for Tremolo {
+    fn process(&mut self, inputs: &[&[f32]], output: &mut [f32]) {
+        let inp = match inputs.first() {
+            Some(s) => *s,
+            None => {
+                output.fill(0.0);
+                return;
+            }
+        };
+        let n = output.len().min(inp.len());
+        let phase_inc = self.rate_hz / self.sample_rate as f32;
+        for i in 0..n {
+            let lfo = 0.5 + 0.5 * f32::sin(2.0 * PI * self.phase);
+            let gain = 1.0 - self.depth + self.depth * lfo;
+            output[i] = inp[i] * gain;
+            self.phase += phase_inc;
+            self.phase %= 1.0;
+        }
+        output[n..].fill(0.0);
+    }
+}
+
+/// Overdrive: soft clipping saturation. output = tanh(drive * input) for warmth.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Overdrive {
+    /// Drive amount (0 = clean passthrough, higher = more saturation). Typical 1–5.
+    pub drive: f32,
+}
+
+impl Overdrive {
+    pub fn new(drive: f32) -> Self {
+        Overdrive { drive }
+    }
+}
+
+impl Processor for Overdrive {
+    fn process(&mut self, inputs: &[&[f32]], output: &mut [f32]) {
+        let inp = match inputs.first() {
+            Some(s) => *s,
+            None => {
+                output.fill(0.0);
+                return;
+            }
+        };
+        let n = output.len().min(inp.len());
+        if self.drive <= 0.0 {
+            output[..n].copy_from_slice(&inp[..n]);
+        } else {
+            let scale = 1.0 + self.drive * 8.0;
+            for i in 0..n {
+                output[i] = (inp[i] * scale).tanh();
+            }
+        }
+        output[n..].fill(0.0);
+    }
+}
+
 /// Biquad filter (Direct Form I). Lowpass or highpass via Audio EQ Cookbook coefficients.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BiquadFilter {

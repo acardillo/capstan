@@ -17,7 +17,7 @@ use capstan::file_feeder::load_wav_at_rate;
 use capstan::graph::{AudioGraph, CompiledGraph, GraphNode};
 use capstan::input_buffer::{FilePlaybackBuffer, InputSampleBuffer, SampleSource};
 use capstan::meter::MeterBuffer;
-use capstan::nodes::{Echo, GainProcessor, InputNode, Mixer, RecordNode, SineGenerator};
+use capstan::nodes::{Echo, GainProcessor, InputNode, Mixer, Overdrive, RecordNode, SineGenerator, Tremolo};
 use capstan::record::{write_wav, RecordBuffer};
 use capstan::run_audio;
 use clap::Parser;
@@ -57,8 +57,12 @@ enum TrackSource {
 struct Track {
     source: TrackSource,
     gain: f32,
-    /// Delay in ms; None = no delay line on this track.
+    /// Echo delay in ms; None = no echo on this track.
     delay_ms: Option<f32>,
+    /// Tremolo: None = off, Some((rate_hz, depth)).
+    tremolo: Option<(f32, f32)>,
+    /// Overdrive: None = off, Some(drive amount 0..5).
+    overdrive: Option<f32>,
 }
 
 /// Open input streams: keep streams alive and map device index -> buffer.
@@ -147,23 +151,34 @@ fn build_session_graph(
                 g.add_node(GraphNode::Input(InputNode::new(Arc::clone(buffer))))
             }
         };
-        let gain = g.add_node(GraphNode::Gain(GainProcessor::new(track.gain)));
-        match track.delay_ms {
-            Some(ms) => {
-                let mut echo = Echo::new(MAX_DELAY_MS, sample_rate);
-                echo.set_delay_ms(ms);
-                let echo_node = g.add_node(GraphNode::Echo(echo));
-                g.add_edge(source_node, echo_node);
-                g.add_edge(echo_node, gain);
-            }
-            None => {
-                g.add_edge(source_node, gain);
-            }
+        let mut head = source_node;
+        if let Some(ms) = track.delay_ms {
+            let mut echo = Echo::new(MAX_DELAY_MS, sample_rate);
+            echo.set_delay_ms(ms);
+            let echo_node = g.add_node(GraphNode::Echo(echo));
+            g.add_edge(head, echo_node);
+            head = echo_node;
         }
+        if let Some((rate_hz, depth)) = track.tremolo {
+            let mut tremolo = Tremolo::new(rate_hz, sample_rate);
+            tremolo.depth = depth.clamp(0.0, 1.0);
+            let trem_node = g.add_node(GraphNode::Tremolo(tremolo));
+            g.add_edge(head, trem_node);
+            head = trem_node;
+        }
+        if let Some(drive) = track.overdrive {
+            let ovd_node = g.add_node(GraphNode::Overdrive(Overdrive::new(drive)));
+            g.add_edge(head, ovd_node);
+            head = ovd_node;
+        }
+        let gain = g.add_node(GraphNode::Gain(GainProcessor::new(track.gain)));
+        g.add_edge(head, gain);
         gain_node_ids.push(gain);
     }
 
-    let num_delays = tracks.iter().filter(|t| t.delay_ms.is_some()).count();
+    let num_echo = tracks.iter().filter(|t| t.delay_ms.is_some()).count();
+    let num_tremolo = tracks.iter().filter(|t| t.tremolo.is_some()).count();
+    let num_overdrive = tracks.iter().filter(|t| t.overdrive.is_some()).count();
     let n = tracks.len();
     let gains: Vec<f32> = tracks.iter().map(|t| t.gain).collect();
     let mix = g.add_node(GraphNode::Mixer(Mixer::new(gains)));
@@ -174,7 +189,8 @@ fn build_session_graph(
     g.add_edge(mix, master);
 
     let g = if let Some(rb) = record_buffer {
-        let master_id = capstan::graph::NodeId::new(n + num_delays + n + 1);
+        let master_id =
+            capstan::graph::NodeId::new(n + num_echo + num_tremolo + num_overdrive + n + 1);
         let rec = g.add_node(GraphNode::Record(RecordNode::new(rb)));
         g.add_edge(master_id, rec);
         g
@@ -182,13 +198,11 @@ fn build_session_graph(
         g
     };
 
-    // Node order: sources 0..n, delays n..n+num_delays, gains n+num_delays..2n+num_delays, mix, master [, record].
+    // Node order: sources 0..n, echo, tremolo, overdrive, gains, mix, master [, record].
     match &meter_buffer {
         Some(mb) if mb.len() == n + 1 => {
-            let tap_indices: Vec<usize> = (0..n)
-                .map(|i| n + num_delays + i)
-                .chain(once(n + num_delays + n + 1))
-                .collect();
+            let base = n + num_echo + num_tremolo + num_overdrive;
+            let tap_indices: Vec<usize> = (0..n).map(|i| base + i).chain(once(base + n + 1)).collect();
             g.compile_with_meter(DEFAULT_FRAME_COUNT, Some((tap_indices, Arc::clone(mb))))
                 .ok()
         }
@@ -273,7 +287,7 @@ fn draw_header(
 ) -> std::io::Result<()> {
     let mut line = 0u16;
     execute!(stdout, MoveTo(0, 0), Clear(ClearType::CurrentLine))?;
-    writeln!(stdout, " track | source     | gain  | echo    | level")?;
+    writeln!(stdout, " track | source     | gain  | echo    | tremolo  | overdrive | level")?;
     line += 1;
     for (i, track) in tracks.iter().enumerate() {
         let src = source_display(&track.source);
@@ -282,14 +296,24 @@ fn draw_header(
             .delay_ms
             .map(|ms| format!("{:.0} ms", ms))
             .unwrap_or_else(|| "-".to_string());
+        let trem_display = track
+            .tremolo
+            .map(|(r, d)| format!("{:.1}/{:.2}", r, d))
+            .unwrap_or_else(|| "-".to_string());
+        let ovd_display = track
+            .overdrive
+            .map(|d| format!("{:.1}", d))
+            .unwrap_or_else(|| "-".to_string());
         execute!(stdout, MoveTo(0, line), Clear(ClearType::CurrentLine))?;
         writeln!(
             stdout,
-            "   {}   | {:>10} | {:.2}  | {:>7} | {}",
+            "   {}   | {:>10} | {:.2}  | {:>7} | {:>8} | {:>9} | {}",
             i + 1,
             src,
             track.gain,
             echo_display,
+            trem_display,
+            ovd_display,
             ascii_meter_with_db(peak)
         )?;
         line += 1;
@@ -299,9 +323,11 @@ fn draw_header(
     execute!(stdout, MoveTo(0, line), Clear(ClearType::CurrentLine))?;
     writeln!(
         stdout,
-        " master| {:>10} | {:.2}  | {:>7} | {}",
+        " master| {:>10} | {:.2}  | {:>7} | {:>8} | {:>9} | {}",
         "(mix)",
         master_gain,
+        "-",
+        "-",
         "-",
         ascii_meter_with_db(master_peak)
     )?;
@@ -552,7 +578,7 @@ fn main() -> std::io::Result<()> {
                                         return Ok(());
                                     }
                                     ["help" | "h" | "?"] => {
-                                        status_msg = "track create | track delete <no> | input <tn> ... | gain [tn] <lvl> | echo <tn> <ms>|none | record | quit".to_string();
+                                        status_msg = "track create | track delete <no> | input <tn> ... | gain [tn] <lvl> | echo <tn> <ms>|none | tremolo <tn> <rate> <depth>|none | overdrive <tn> <0-5>|none | record | quit".to_string();
                                     }
 
                                     ["track", "create"] => {
@@ -560,6 +586,8 @@ fn main() -> std::io::Result<()> {
                                             source: TrackSource::None,
                                             gain: 0.7,
                                             delay_ms: None,
+                                            tremolo: None,
+                                            overdrive: None,
                                         });
                                         session_changed = true;
                                         status_kind = StatusKind::Success;
@@ -803,6 +831,115 @@ fn main() -> std::io::Result<()> {
                                         } else {
                                             status_msg = "Usage: echo <track_no> <ms> | echo <track_no> none"
                                                 .to_string();
+                                        }
+                                    }
+
+                                    ["tremolo", track_no, "none"] => {
+                                        if let Ok(tn) = track_no.parse::<usize>() {
+                                            if (1..=tracks.len()).contains(&tn) {
+                                                tracks[tn - 1].tremolo = None;
+                                                session_changed = true;
+                                                status_kind = StatusKind::Success;
+                                                status_msg = format!("Track {} tremolo removed.", tn);
+                                            } else {
+                                                status_kind = StatusKind::Warning;
+                                                status_msg = format!(
+                                                    "Track number must be 1–{}.",
+                                                    tracks.len().max(1)
+                                                );
+                                            }
+                                        } else {
+                                            status_msg =
+                                                "Usage: tremolo <track_no> <rate_hz> <depth> | tremolo <track_no> none"
+                                                    .to_string();
+                                        }
+                                    }
+                                    ["tremolo", track_no, rate_str, depth_str] => {
+                                        if let (Ok(tn), Ok(rate), Ok(depth)) = (
+                                            track_no.parse::<usize>(),
+                                            rate_str.parse::<f32>(),
+                                            depth_str.parse::<f32>(),
+                                        ) {
+                                            if (1..=tracks.len()).contains(&tn) {
+                                                if (0.1..=20.0).contains(&rate)
+                                                    && (0.0..=1.0).contains(&depth)
+                                                {
+                                                    tracks[tn - 1].tremolo = Some((rate, depth));
+                                                    session_changed = true;
+                                                    status_kind = StatusKind::Success;
+                                                    status_msg = format!(
+                                                        "Track {} tremolo {:.1} Hz depth {:.2}.",
+                                                        tn, rate, depth
+                                                    );
+                                                } else {
+                                                    status_kind = StatusKind::Warning;
+                                                    status_msg =
+                                                        "Tremolo rate 0.1–20 Hz, depth 0–1.".to_string();
+                                                }
+                                            } else {
+                                                status_kind = StatusKind::Warning;
+                                                status_msg = format!(
+                                                    "Track number must be 1–{}.",
+                                                    tracks.len().max(1)
+                                                );
+                                            }
+                                        } else {
+                                            status_msg =
+                                                "Usage: tremolo <track_no> <rate_hz> <depth> | tremolo <track_no> none"
+                                                    .to_string();
+                                        }
+                                    }
+
+                                    ["overdrive", track_no, "none"] => {
+                                        if let Ok(tn) = track_no.parse::<usize>() {
+                                            if (1..=tracks.len()).contains(&tn) {
+                                                tracks[tn - 1].overdrive = None;
+                                                session_changed = true;
+                                                status_kind = StatusKind::Success;
+                                                status_msg = format!("Track {} overdrive removed.", tn);
+                                            } else {
+                                                status_kind = StatusKind::Warning;
+                                                status_msg = format!(
+                                                    "Track number must be 1–{}.",
+                                                    tracks.len().max(1)
+                                                );
+                                            }
+                                        } else {
+                                            status_msg =
+                                                "Usage: overdrive <track_no> <0-5> | overdrive <track_no> none"
+                                                    .to_string();
+                                        }
+                                    }
+                                    ["overdrive", track_no, amount_str] => {
+                                        if let (Ok(tn), Ok(amount)) = (
+                                            track_no.parse::<usize>(),
+                                            amount_str.parse::<f32>(),
+                                        ) {
+                                            if (1..=tracks.len()).contains(&tn) {
+                                                if (0.0..=5.0).contains(&amount) {
+                                                    tracks[tn - 1].overdrive = Some(amount);
+                                                    session_changed = true;
+                                                    status_kind = StatusKind::Success;
+                                                    status_msg = format!(
+                                                        "Track {} overdrive {:.1}.",
+                                                        tn, amount
+                                                    );
+                                                } else {
+                                                    status_kind = StatusKind::Warning;
+                                                    status_msg =
+                                                        "Overdrive must be 0–5.".to_string();
+                                                }
+                                            } else {
+                                                status_kind = StatusKind::Warning;
+                                                status_msg = format!(
+                                                    "Track number must be 1–{}.",
+                                                    tracks.len().max(1)
+                                                );
+                                            }
+                                        } else {
+                                            status_msg =
+                                                "Usage: overdrive <track_no> <0-5> | overdrive <track_no> none"
+                                                    .to_string();
                                         }
                                     }
 

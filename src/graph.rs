@@ -6,7 +6,8 @@ use std::sync::Arc;
 use crate::audio_buffer::AudioBuffer;
 use crate::meter::MeterBuffer;
 use crate::nodes::{
-    BiquadFilter, DelayLine, Echo, GainProcessor, InputNode, Mixer, RecordNode, SineGenerator,
+    BiquadFilter, DelayLine, Echo, GainProcessor, InputNode, Mixer, Overdrive, RecordNode,
+    SineGenerator, Tremolo,
 };
 use crate::processor::Processor;
 
@@ -35,6 +36,8 @@ pub enum GraphNode {
     Input(InputNode),
     Delay(DelayLine),
     Echo(Echo),
+    Tremolo(Tremolo),
+    Overdrive(Overdrive),
     Biquad(BiquadFilter),
     Record(RecordNode),
 }
@@ -48,6 +51,8 @@ impl Processor for GraphNode {
             GraphNode::Input(n) => n.process(inputs, output),
             GraphNode::Delay(d) => d.process(inputs, output),
             GraphNode::Echo(e) => e.process(inputs, output),
+            GraphNode::Tremolo(t) => t.process(inputs, output),
+            GraphNode::Overdrive(o) => o.process(inputs, output),
             GraphNode::Biquad(b) => b.process(inputs, output),
             GraphNode::Record(r) => r.process(inputs, output),
         }
