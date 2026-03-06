@@ -677,9 +677,7 @@ fn handle_command(
                 }
             } else {
                 status_kind = StatusKind::Warning;
-                status_msg = parse_track_no(track_no, n)
-                    .err()
-                    .unwrap_or_default();
+                status_msg = parse_track_no(track_no, n).err().unwrap_or_default();
             }
         }
         ["tremolo", track_no, "none"] => match parse_track_no(track_no, n) {
