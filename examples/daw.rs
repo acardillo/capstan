@@ -17,7 +17,8 @@ use capstan::file_feeder::load_wav_at_rate;
 use capstan::graph::{AudioGraph, CompiledGraph, GraphNode};
 use capstan::input_buffer::{FilePlaybackBuffer, InputSampleBuffer, SampleSource};
 use capstan::meter::MeterBuffer;
-use capstan::nodes::{GainProcessor, InputNode, Mixer, SineGenerator};
+use capstan::nodes::{GainProcessor, InputNode, Mixer, RecordNode, SineGenerator};
+use capstan::record::{write_wav, RecordBuffer};
 use capstan::run_audio;
 use clap::Parser;
 use crossterm::cursor::{MoveTo, Show};
@@ -101,6 +102,7 @@ fn build_session_graph(
     master_gain: f32,
     meter_buffer: Option<Arc<MeterBuffer>>,
     sample_rate: u32,
+    record_buffer: Option<Arc<RecordBuffer>>,
 ) -> Option<CompiledGraph> {
     use std::iter::once;
     let mut g = AudioGraph::new();
@@ -108,6 +110,13 @@ fn build_session_graph(
         let inp = g.add_node(GraphNode::Input(InputNode::new(Arc::clone(silent_buffer))));
         let out = g.add_node(GraphNode::Gain(GainProcessor::new(master_gain)));
         g.add_edge(inp, out);
+        let g = if let Some(rb) = record_buffer {
+            let rec = g.add_node(GraphNode::Record(RecordNode::new(rb)));
+            g.add_edge(capstan::graph::NodeId::new(1), rec);
+            g
+        } else {
+            g
+        };
         return match &meter_buffer {
             Some(mb) if mb.len() == 1 => g
                 .compile_with_meter(DEFAULT_FRAME_COUNT, Some((vec![1], Arc::clone(mb))))
@@ -149,7 +158,16 @@ fn build_session_graph(
     g.add_edge(mix, master);
 
     let n = tracks.len();
-    // Node order: sources 0..n, gains n..2n, mixer 2n, master 2n+1. Tap track gains + master.
+    let g = if let Some(rb) = record_buffer {
+        let master_id = capstan::graph::NodeId::new(2 * n + 1);
+        let rec = g.add_node(GraphNode::Record(RecordNode::new(rb)));
+        g.add_edge(master_id, rec);
+        g
+    } else {
+        g
+    };
+
+    // Node order: ... master 2n+1 [, record 2n+2]. Tap track gains + master (same indices with or without record).
     match &meter_buffer {
         Some(mb) if mb.len() == n + 1 => {
             let tap_indices: Vec<usize> = (0..n).map(|i| n + i).chain(once(2 * n + 1)).collect();
@@ -157,6 +175,31 @@ fn build_session_graph(
                 .ok()
         }
         _ => g.compile(DEFAULT_FRAME_COUNT).ok(),
+    }
+}
+
+fn recording_path() -> PathBuf {
+    let desktop = expand_tilde("~/Desktop");
+    let filename = format!(
+        "Recording_{}.wav",
+        chrono::Local::now().format("%Y-%m-%d_%H-%M-%S")
+    );
+    desktop.join(filename)
+}
+
+fn expand_tilde(path: &str) -> PathBuf {
+    if path == "~" || path.starts_with("~/") {
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_else(|_| ".".to_string());
+        let home = PathBuf::from(home);
+        if path == "~" {
+            home
+        } else {
+            home.join(path.trim_start_matches('~').trim_start_matches('/'))
+        }
+    } else {
+        PathBuf::from(path)
     }
 }
 
@@ -335,6 +378,9 @@ fn main() -> std::io::Result<()> {
     let silent_buffer: Arc<dyn SampleSource + Send + Sync> = Arc::new(InputSampleBuffer::new(2048));
     let mut meter_buffer = Some(Arc::new(MeterBuffer::new(tracks.len() + 1)));
     let mut input_line = String::new();
+    let mut recording = false;
+    let mut record_buffer: Option<Arc<RecordBuffer>> = None;
+    let mut record_output_path: Option<PathBuf> = None;
     let mut cursor_pos: usize = 0; // index into input_line (0..=len)
     let mut status_msg: String;
     let mut history: Vec<String> = Vec::new();
@@ -355,6 +401,7 @@ fn main() -> std::io::Result<()> {
         master_gain,
         meter_buffer.clone(),
         output_sample_rate,
+        None,
     ) {
         send_graph(&cmd_tx, compiled);
     }
@@ -387,6 +434,40 @@ fn main() -> std::io::Result<()> {
                 }
                 match ke.code {
                     KeyCode::Enter => {
+                        if recording {
+                            if let (Some(rb), Some(path)) = (record_buffer.take(), record_output_path.take()) {
+                                rb.set_armed(false);
+                                thread::sleep(Duration::from_millis(150));
+                                let samples = rb.drain();
+                                let _ = path.parent().map(std::fs::create_dir_all);
+                                match write_wav(&path, &samples, output_sample_rate) {
+                                    Ok(()) => {
+                                        history.push("> record".to_string());
+                                        history.push(format!(
+                                            "{}Saved to {}",
+                                            SUCCESS_PREFIX,
+                                            path.display()
+                                        ));
+                                    }
+                                    Err(e) => {
+                                        history.push("> record".to_string());
+                                        history.push(format!("{}Write WAV: {}", ERROR_PREFIX, e));
+                                    }
+                                }
+                            }
+                            recording = false;
+                            if let Some(compiled) = build_session_graph(
+                                &tracks,
+                                &open_inputs,
+                                &silent_buffer,
+                                master_gain,
+                                meter_buffer.clone(),
+                                output_sample_rate,
+                                None,
+                            ) {
+                                send_graph(&cmd_tx, compiled);
+                            }
+                        } else {
                         let line = input_line.trim().to_string();
                         input_line.clear();
                         cursor_pos = 0;
@@ -396,6 +477,37 @@ fn main() -> std::io::Result<()> {
                             let mut status_kind = StatusKind::Neutral;
 
                             match parts.as_slice() {
+                                ["record"] => {
+                                    if recording {
+                                        status_kind = StatusKind::Warning;
+                                        status_msg = "Already recording. Press Enter to stop.".to_string();
+                                    } else {
+                                        let path = recording_path();
+                                        record_buffer = Some(Arc::new(RecordBuffer::new()));
+                                        record_buffer.as_ref().unwrap().set_armed(true);
+                                        if let Some(compiled) = build_session_graph(
+                                            &tracks,
+                                            &open_inputs,
+                                            &silent_buffer,
+                                            master_gain,
+                                            meter_buffer.clone(),
+                                            output_sample_rate,
+                                            record_buffer.clone(),
+                                        ) {
+                                            send_graph(&cmd_tx, compiled);
+                                            record_output_path = Some(path);
+                                            recording = true;
+                                            session_changed = false; // we already sent the graph
+                                            status_kind = StatusKind::Success;
+                                            status_msg = "Recording... Press Enter to stop.".to_string();
+                                        } else {
+                                            record_buffer.as_ref().unwrap().set_armed(false);
+                                            record_buffer = None;
+                                            status_kind = StatusKind::Error;
+                                            status_msg = "Failed to compile graph for recording.".to_string();
+                                        }
+                                    }
+                                }
                                 ["quit" | "q"] => {
                                     let _ = cmd_tx.try_send(Command::Quit);
                                     let _ = shutdown_tx.send(());
@@ -410,7 +522,7 @@ fn main() -> std::io::Result<()> {
                                     return Ok(());
                                 }
                                 ["help" | "h" | "?"] => {
-                                    status_msg = "track create | track delete <no> | input --list | input <tn> --device <n> | input <tn> --sine <hz> | input <tn> --file <path> | gain [tn] <lvl> | quit".to_string();
+                                    status_msg = "track create | track delete <no> | input --list | input <tn> --device <n> | input <tn> --sine <hz> | input <tn> --file <path> | gain [tn] <lvl> | record | quit".to_string();
                                 }
 
                                 ["track", "create"] => {
@@ -618,6 +730,7 @@ fn main() -> std::io::Result<()> {
                                     master_gain,
                                     meter_buffer.clone(),
                                     output_sample_rate,
+                                    None,
                                 ) {
                                     send_graph(&cmd_tx, compiled);
                                 } else {
@@ -639,6 +752,7 @@ fn main() -> std::io::Result<()> {
                                 command_history.remove(0);
                             }
                             history_index = None;
+                        }
                         }
                     }
                     KeyCode::Left => {
