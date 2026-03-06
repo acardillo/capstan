@@ -2,6 +2,7 @@
 
 use crate::input_buffer::SampleSource;
 use crate::processor::Processor;
+use crate::record::RecordBuffer;
 use std::f32::consts::PI;
 use std::sync::Arc;
 
@@ -302,6 +303,45 @@ impl PartialEq for InputNode {
 impl Processor for InputNode {
     fn process(&mut self, _inputs: &[&[f32]], output: &mut [f32]) {
         let _ = self.buffer.read_block(output);
+    }
+}
+
+/// Pass-through node that records the signal to a shared [`RecordBuffer`] when armed.
+/// Place it anywhere in the graph to capture that point in the chain (e.g. after effects).
+#[derive(Clone)]
+pub struct RecordNode {
+    pub buffer: Arc<RecordBuffer>,
+}
+
+impl RecordNode {
+    pub fn new(buffer: Arc<RecordBuffer>) -> Self {
+        Self { buffer }
+    }
+}
+
+impl std::fmt::Debug for RecordNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RecordNode(..)")
+    }
+}
+
+impl PartialEq for RecordNode {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.buffer, &other.buffer)
+    }
+}
+
+impl Processor for RecordNode {
+    fn process(&mut self, inputs: &[&[f32]], output: &mut [f32]) {
+        let n = output.len();
+        if let Some(inp) = inputs.first() {
+            let copy_len = n.min(inp.len());
+            output[..copy_len].copy_from_slice(&inp[..copy_len]);
+            output[copy_len..].fill(0.0);
+            self.buffer.write_block(&output[..copy_len]);
+        } else {
+            output.fill(0.0);
+        }
     }
 }
 

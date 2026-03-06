@@ -113,3 +113,14 @@ The graph is built from these node types:
 | **Input**  | InputNode     | Reads from a **SampleSource** (device ring buffer or file playback buffer).                  |
 | **Delay**  | DelayLine     | One input, one output; delay time in ms. Circular buffer; set via `set_delay_ms`.            |
 | **Biquad** | BiquadFilter  | Lowpass or highpass. Direct Form I; `lowpass(sample_rate, cutoff_hz, q)` or `highpass(...)`. |
+| **Record** | RecordNode    | Pass-through that appends the signal to a shared [`RecordBuffer`](crate::record::RecordBuffer) when armed. Use to record through the graph (e.g. input → effects → Record → output). |
+
+## Recording through the graph
+
+To record the **output of the graph** (or any point in the chain), add a **Record** node and a shared **RecordBuffer**:
+
+- Create `Arc::new(RecordBuffer::new())` and pass it to `RecordNode::new(Arc::clone(&record_buf))`. Keep the same `Arc` on the control thread.
+- Add the Record node to the graph (e.g. as the last node before the output, or after specific effects).
+- To start: `record_buf.set_armed(true)`.
+- To stop: `record_buf.set_armed(false)`, then `let samples = record_buf.drain()`.
+- Save with `record::write_wav(path, &samples, sample_rate)` (use the stream’s sample rate from the `StreamStarted` event).

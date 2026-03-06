@@ -26,6 +26,7 @@ pub mod input_buffer;
 pub mod meter;
 pub mod nodes;
 pub mod processor;
+pub mod record;
 pub mod ring_buffer;
 
 /// Re-export for advanced use (custom streams, device enumeration). Most apps should use [`run_audio`].

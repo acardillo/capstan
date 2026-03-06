@@ -5,7 +5,9 @@ use std::sync::Arc;
 
 use crate::audio_buffer::AudioBuffer;
 use crate::meter::MeterBuffer;
-use crate::nodes::{BiquadFilter, DelayLine, GainProcessor, InputNode, Mixer, SineGenerator};
+use crate::nodes::{
+    BiquadFilter, DelayLine, GainProcessor, InputNode, Mixer, RecordNode, SineGenerator,
+};
 use crate::processor::Processor;
 
 /// Identifies a node in the audio graph. Newtype so we don't confuse node indices with other integers.
@@ -33,6 +35,7 @@ pub enum GraphNode {
     Input(InputNode),
     Delay(DelayLine),
     Biquad(BiquadFilter),
+    Record(RecordNode),
 }
 
 impl Processor for GraphNode {
@@ -44,6 +47,7 @@ impl Processor for GraphNode {
             GraphNode::Input(n) => n.process(inputs, output),
             GraphNode::Delay(d) => d.process(inputs, output),
             GraphNode::Biquad(b) => b.process(inputs, output),
+            GraphNode::Record(r) => r.process(inputs, output),
         }
     }
 }
@@ -426,5 +430,30 @@ mod tests {
             peaks[0] > 0.0 && peaks[0] <= 0.11,
             "tap 1 = gain output, peak ~0.1"
         );
+    }
+
+    #[test]
+    fn test_compiled_graph_with_record_node() {
+        use crate::nodes::RecordNode;
+        use crate::record::RecordBuffer;
+        use std::sync::Arc;
+        let record_buf = Arc::new(RecordBuffer::new());
+        let mut g = AudioGraph::new();
+        g.add_node(GraphNode::Sine(SineGenerator::new(440.0, 48_000)));
+        g.add_node(GraphNode::Record(RecordNode::new(Arc::clone(&record_buf))));
+        g.add_edge(NodeId::new(0), NodeId::new(1));
+        let mut compiled = g.compile(64).unwrap();
+        let mut output = vec![0.0f32; 64];
+        record_buf.set_armed(true);
+        compiled.process(&mut output);
+        compiled.process(&mut output);
+        record_buf.set_armed(false);
+        let drained = record_buf.drain();
+        assert_eq!(drained.len(), 128, "two blocks of 64");
+        let max_abs = drained
+            .iter()
+            .map(|s| s.abs())
+            .fold(0.0f32, |a, b| a.max(b));
+        assert!(max_abs > 0.0 && max_abs <= 1.0, "recorded sine-like levels");
     }
 }

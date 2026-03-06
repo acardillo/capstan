@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::StreamConfig;
 
 use crate::input_buffer::InputSampleBuffer;
 use crate::stream_config_with_low_latency;
@@ -39,6 +40,26 @@ impl std::fmt::Display for DeviceError {
 }
 
 impl std::error::Error for DeviceError {}
+
+/// Returns the stream config (including sample rate) that [`open_input_stream`] would use for
+/// the device at `device_index`. Use this to get the input sample rate without opening the stream.
+pub fn input_stream_config(
+    host: &cpal::Host,
+    device_index: usize,
+) -> Result<StreamConfig, DeviceError> {
+    let device = host
+        .input_devices()
+        .map_err(DeviceError::List)?
+        .nth(device_index)
+        .ok_or(DeviceError::NoDeviceAtIndex(device_index))?;
+    let supported = device.default_input_config().map_err(DeviceError::Config)?;
+    if supported.sample_format() != cpal::SampleFormat::F32 {
+        return Err(DeviceError::Build(
+            cpal::BuildStreamError::StreamConfigNotSupported,
+        ));
+    }
+    Ok(stream_config_with_low_latency(&supported))
+}
 
 /// Returns a list of input devices: index and name. Use `index` with [`open_input_stream`].
 /// On some backends (e.g. ALSA) devices are enumerated one at a time and dropped to avoid
