@@ -23,7 +23,7 @@ _Events_ are used to notify the control thread of events such as the audio threa
 | **AudioBuffer**   | Audio   | Fixed-size f32 array per node. Allocated at compile time; reused every callback.                                                                                        |
 | **RingBuffer**    | Both    | Lock-free **Single Producer, Single Consumer** buffer; fixed capacity;                                                                                                  |
 
-## Data Flow
+## Audio Control Flow
 
 ```
 | CONTROL THREAD   |                           | AUDIO THREAD             |
@@ -44,11 +44,17 @@ _Events_ are used to notify the control thread of events such as the audio threa
 |                  |                           |  Output to device        |
 ```
 
-## Commands and Events
+## Commands
 
-**Command** (control → audio): `NoOp`, `SetGain(f32)`, `Quit`, `Resume`, `SwapGraph(CompiledGraph)`. Engine drains at the top of each callback; SwapGraph replaces the current graph and sends the previous one back as **Event::GraphSwapped** so the control thread can drop it (no leak).
+_Commands_ are used to modify the audio graph and to quit the audio thread. They are sent from the control thread and received by the audio thread. At the start of each audio callback, the audio thread drains the command buffer and applies the commands.
 
-**Event** (audio → control): `NoOp`, `GraphSwapped(CompiledGraph)`, `StreamStopped`, **StreamStarted(u32)**. StreamStarted is sent once when `run_audio` has the output config; the `u32` is the **actual output sample rate**. Use it for WAV resampling and graph construction so playback and processing match the device. Poll the event channel (e.g. in the main loop); no blocking.
+`NoOp`, `SetGain(level)`, `Quit`, `Resume`, `SwapGraph(CompiledGraph)`.
+
+## Events
+
+_Events_ are used to notify the control thread of events such as the audio thread starting or stopping. They are sent from the audio thread and received by the control thread. The application should poll the event buffer in the main loop and handle the events accordingly.
+
+`NoOp`, `GraphSwapped(CompiledGraph)`, `StreamStopped`, `StreamStarted(sampleRate)`.
 
 ## Sample sources and InputNode
 
