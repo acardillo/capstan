@@ -342,8 +342,7 @@ fn main() -> std::io::Result<()> {
     enable_raw_mode().map_err(std::io::Error::other)?;
     let mut stdout = io::stdout();
 
-    execute!(stdout, Clear(ClearType::All), MoveTo(0, 0))
-        .map_err(std::io::Error::other)?;
+    execute!(stdout, Clear(ClearType::All), MoveTo(0, 0)).map_err(std::io::Error::other)?;
     stdout.flush()?;
 
     // Initial graph with master meter (1 slot when no tracks).
@@ -372,9 +371,7 @@ fn main() -> std::io::Result<()> {
         execute!(stdout, MoveTo(cursor_col, pr), Show)?;
         stdout.flush()?;
 
-        if event::poll(Duration::from_millis(HEADER_REDRAW_MS))
-            .map_err(std::io::Error::other)?
-        {
+        if event::poll(Duration::from_millis(HEADER_REDRAW_MS)).map_err(std::io::Error::other)? {
             if let Ok(Event::Key(ke)) = event::read() {
                 if ke.kind != KeyEventKind::Press {
                     continue;
