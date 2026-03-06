@@ -319,10 +319,12 @@ fn main() -> std::io::Result<()> {
     let (cmd_tx, cmd_rx) = command_channel(cli.channel_capacity);
     let (evt_tx, evt_rx) = event_channel(cli.channel_capacity);
     let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel();
+    let (audio_result_tx, audio_result_rx) = std::sync::mpsc::channel();
     let host = capstan::cpal::default_host();
 
     let audio_handle = thread::spawn(move || {
-        run_audio(cmd_rx, evt_tx, shutdown_rx, None);
+        let result = run_audio(cmd_rx, evt_tx, shutdown_rx, None);
+        let _ = audio_result_tx.send(result);
     });
 
     let mut output_sample_rate = capstan::default_output_sample_rate().unwrap_or(48_000);
@@ -358,6 +360,13 @@ fn main() -> std::io::Result<()> {
     }
 
     loop {
+        if let Ok(Err(e)) = audio_result_rx.try_recv() {
+            disable_raw_mode().map_err(std::io::Error::other)?;
+            eprintln!("Audio error: {}", e);
+            let _ = audio_handle.join();
+            return Err(std::io::Error::other(e.to_string()));
+        }
+
         let pr = prompt_row(&tracks);
         let peaks = meter_buffer
             .as_ref()
@@ -392,6 +401,9 @@ fn main() -> std::io::Result<()> {
                                     let _ = shutdown_tx.send(());
                                     disable_raw_mode().map_err(std::io::Error::other)?;
                                     let _ = audio_handle.join();
+                                    if let Ok(Err(e)) = audio_result_rx.recv() {
+                                        eprintln!("Audio error: {}", e);
+                                    }
                                     execute!(stdout, Clear(ClearType::All), MoveTo(0, 0))
                                         .map_err(std::io::Error::other)?;
                                     stdout.flush()?;

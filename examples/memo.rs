@@ -58,6 +58,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (cmd_tx, cmd_rx) = command_channel(64);
     let (evt_tx, evt_rx) = event_channel(64);
     let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel();
+    let (audio_result_tx, audio_result_rx) = std::sync::mpsc::channel();
 
     let input_buffer = Arc::new(InputSampleBuffer::new(INPUT_RING_CAPACITY));
     let input_source: Arc<dyn SampleSource + Send + Sync> = Arc::clone(&input_buffer) as _;
@@ -69,12 +70,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     graph.add_edge(inp, rec);
     let compiled = graph.compile(FRAME_COUNT).map_err(|e| e.to_string())?;
 
-    thread::spawn(move || {
-        run_audio(cmd_rx, evt_tx, shutdown_rx, Some(input_buffer));
+    let audio_handle = thread::spawn(move || {
+        let result = run_audio(cmd_rx, evt_tx, shutdown_rx, Some(input_buffer));
+        let _ = audio_result_tx.send(result);
     });
 
     let mut sample_rate = 48_000u32;
     for _ in 0..50 {
+        if let Ok(Err(e)) = audio_result_rx.try_recv() {
+            let _ = audio_handle.join();
+            return Err(e.into());
+        }
         while let Some(evt) = evt_rx.try_recv() {
             if let Event::StreamStarted(rate) = evt {
                 sample_rate = rate;
@@ -108,6 +114,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let _ = cmd_tx.try_send(Command::Quit);
     let _ = shutdown_tx.send(());
+
+    let _ = audio_handle.join();
+    match audio_result_rx.recv() {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => return Err(e.into()),
+        Err(_) => return Err(std::io::Error::other("audio thread exited without sending result").into()),
+    }
 
     let filename = format!(
         "Memo_{}.wav",

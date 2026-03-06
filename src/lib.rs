@@ -35,6 +35,48 @@ use crate::engine::Engine;
 use crate::event::EventSender;
 use crate::input_buffer::InputSampleBuffer;
 
+/// Errors from [`run_audio`]: device discovery, stream config, or stream build/play failure.
+///
+/// Callers should handle these and decide whether to try another device, show a message, or exit.
+#[derive(Debug)]
+pub enum RunAudioError {
+    /// No default output device is available.
+    NoOutputDevice,
+    /// Could not get the default stream config for the output device.
+    NoOutputConfig(cpal::DefaultStreamConfigError),
+    /// The device does not support F32 output; only F32 is supported.
+    UnsupportedSampleFormat(cpal::SampleFormat),
+    /// Failed to build the output stream (e.g. config not supported).
+    BuildOutputStream(cpal::BuildStreamError),
+    /// Failed to start the output stream (e.g. device not available).
+    PlayStream(cpal::PlayStreamError),
+}
+
+impl std::fmt::Display for RunAudioError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RunAudioError::NoOutputDevice => write!(f, "no output device available"),
+            RunAudioError::NoOutputConfig(e) => write!(f, "no output config: {}", e),
+            RunAudioError::UnsupportedSampleFormat(fmt) => {
+                write!(f, "run_audio only supports F32 output; device has {:?}", fmt)
+            }
+            RunAudioError::BuildOutputStream(e) => write!(f, "failed to build output stream: {}", e),
+            RunAudioError::PlayStream(e) => write!(f, "failed to start output stream: {}", e),
+        }
+    }
+}
+
+impl std::error::Error for RunAudioError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            RunAudioError::NoOutputConfig(e) => Some(e),
+            RunAudioError::BuildOutputStream(e) => Some(e),
+            RunAudioError::PlayStream(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
 /// Preferred buffer size in frames for low-latency (≈2.7 ms at 48 kHz). Host may use a larger minimum.
 const LOW_LATENCY_BUFFER_FRAMES: u32 = 128;
 
@@ -89,36 +131,45 @@ pub fn stream_config_with_low_latency(supported: &cpal::SupportedStreamConfig) -
 }
 
 /// Runs the audio engine with the default output device (and optionally the default input device).
-/// Blocks until `shutdown` receives a message, then returns. All CPAL setup and the audio callback
-/// are handled inside the crate; the control thread only needs to pass the command/event channels
-/// and a shutdown receiver.
+/// Blocks until `shutdown` receives a message, then returns `Ok(())`. All CPAL setup and the
+/// audio callback are handled inside the crate; the control thread only needs to pass the
+/// command/event channels and a shutdown receiver.
 ///
-/// Requires F32 output. If `input_buffer` is `Some`, the default input device is opened and
-/// its callback feeds the buffer (for graphs that use an `Input` node).
+/// # Errors
+///
+/// Returns an error if:
+/// - No default output device is available
+/// - The default output config cannot be retrieved
+/// - The device does not support F32 output (only F32 is supported)
+/// - The output stream fails to build or start
+///
+/// The caller should handle [`RunAudioError`] and decide whether to try another device, show a
+/// message, or exit. Use [`default_output_sample_rate`] to probe for a device before calling
+/// if you want to fail fast without spawning a thread.
+///
+/// If `input_buffer` is `Some`, the default input device is opened when possible and its callback
+/// feeds the buffer (for graphs that use an `Input` node). If input cannot be opened, playback
+/// continues with output only and no error is returned.
 pub fn run_audio(
     cmd_rx: CommandReceiver,
     evt_tx: EventSender,
     shutdown: std::sync::mpsc::Receiver<()>,
     input_buffer: Option<std::sync::Arc<InputSampleBuffer>>,
-) {
+) -> Result<(), RunAudioError> {
     let host = cpal::default_host();
     let device = host
         .default_output_device()
-        .expect("no output device available");
+        .ok_or(RunAudioError::NoOutputDevice)?;
     let supported_config = device
         .default_output_config()
-        .expect("no output config available");
+        .map_err(RunAudioError::NoOutputConfig)?;
     let sample_format = supported_config.sample_format();
+    if sample_format != SampleFormat::F32 {
+        return Err(RunAudioError::UnsupportedSampleFormat(sample_format));
+    }
     let config = stream_config_with_low_latency(&supported_config);
     let sample_rate = config.sample_rate;
     let _ = evt_tx.try_send(crate::event::Event::StreamStarted(sample_rate));
-
-    if sample_format != SampleFormat::F32 {
-        panic!(
-            "run_audio only supports F32 output; device has {:?}",
-            sample_format
-        );
-    }
 
     let mut engine = Engine::new(sample_rate, 440.0, 0.5);
     let channels = config.channels;
@@ -133,7 +184,7 @@ pub fn run_audio(
                     let buf_clone = std::sync::Arc::clone(buf);
                     let err_fn =
                         move |err: cpal::StreamError| eprintln!("input stream error: {}", err);
-                    match input_device.build_input_stream(
+                    if let Ok(input_stream) = input_device.build_input_stream(
                         &input_config,
                         move |data: &[f32], _: &cpal::InputCallbackInfo| {
                             buf_clone.write_block(data, in_ch);
@@ -141,31 +192,31 @@ pub fn run_audio(
                         err_fn,
                         None,
                     ) {
-                        Ok(input_stream) => {
-                            let _ = input_stream.play();
-                            let _input_stream = input_stream;
-                            let err_fn_out = move |err: cpal::StreamError| {
-                                eprintln!("output stream error: {}", err)
-                            };
-                            let out_stream = device
-                                .build_output_stream(
-                                    &config,
-                                    move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                                        let frames = data.len() / channels as usize;
-                                        let mono = mono_buf[..frames].as_mut();
-                                        engine.process_audio(&cmd_rx, &evt_tx, mono);
-                                        interleave_mono_to_stereo(mono, data, channels);
-                                    },
-                                    err_fn_out,
-                                    None,
-                                )
-                                .expect("failed to build output stream");
-                            out_stream.play().expect("failed to start output stream");
-                            let _ = shutdown.recv();
-                            return;
-                        }
-                        Err(e) => eprintln!("failed to build input stream: {}", e),
+                        let _ = input_stream.play();
+                        let _input_stream = input_stream;
+                        let err_fn_out = move |err: cpal::StreamError| {
+                            eprintln!("output stream error: {}", err)
+                        };
+                        let out_stream = device
+                            .build_output_stream(
+                                &config,
+                                move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                                    let frames = data.len() / channels as usize;
+                                    let mono = mono_buf[..frames].as_mut();
+                                    engine.process_audio(&cmd_rx, &evt_tx, mono);
+                                    interleave_mono_to_stereo(mono, data, channels);
+                                },
+                                err_fn_out,
+                                None,
+                            )
+                            .map_err(RunAudioError::BuildOutputStream)?;
+                        out_stream
+                            .play()
+                            .map_err(RunAudioError::PlayStream)?;
+                        let _ = shutdown.recv();
+                        return Ok(());
                     }
+                    // Input stream build failed; fall through to output-only
                 }
             }
         }
@@ -184,8 +235,9 @@ pub fn run_audio(
             err_fn,
             None,
         )
-        .expect("failed to build output stream");
+        .map_err(RunAudioError::BuildOutputStream)?;
 
-    stream.play().expect("failed to start stream");
+    stream.play().map_err(RunAudioError::PlayStream)?;
     let _ = shutdown.recv();
+    Ok(())
 }
