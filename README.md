@@ -15,15 +15,13 @@ cargo run --example daw
 cargo run --example memo
 ```
 
-## Examples
-
-**Digital Audio Workstation (DAW)**
+### Example - Digital Audio Workstation (DAW) CLI
 
 A CLI-based mini DAW with multiple tracks. Tracks can take input from a device, sine oscillator, or WAV file. Gain can be set per-track and monitored with live ASCII level meters.
 
 Run with `cargo run --example daw`.
 
-**Memo**
+### Example - Memo CLI
 
 A simple recorder from the default input. Records to a timestamped WAV file.
 
