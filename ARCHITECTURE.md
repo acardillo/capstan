@@ -81,19 +81,22 @@ Device and File inputs use the **SampleSource** trait via **InputNode**. Sample 
 
 The _StreamStarted(sample_rate)_ event is used to set the target rate so the file matches the output device.
 
-## Meter taps
+## Meter Taps
 
-**MeterBuffer**: fixed number of slots; each holds one f32 (peak). **Audio thread** writes via `write_peak(slot, value)`; **control thread** reads via `read_peaks()` (e.g. each UI frame). Lock-free (atomics).
+Meter taps are used to report the peak level of nodes in the audio graph to the control thread.
 
-**compile_with_meter(frame_count, Some((tap_indices, meter_buffer)))** — `tap_indices`: scratch-buffer indices in **topo order** (same order as nodes in CompiledGraph). After each `process()` call, **CompiledGraph** computes the peak (max abs) of each tapped scratch and writes it to the corresponding MeterBuffer slot. So the **graph** does the metering, not the Engine. Requirement: `tap_indices.len() == meter_buffer.len()` and each index `< node_count`. Typical: one tap per track gain output, one for master.
+**MeterBuffer**: A fixed SPSC buffer holding one f32 (peak) per tap. Typically one tap is used per gain node in the audio graph and one for the master output.
 
-## Device
+- **MeterBuffer::new(num_taps)** — Creates a meter buffer with the given number of taps.
+- **MeterBuffer::write_peak(slot, value)** — Writes the peak level to the given slot. Called from the audio thread after processing a block.
+- **MeterBuffer::read_peaks()** — Reads all current peak levels. Called from the control thread to get the peak levels for UI.
+
+**compile_with_meter(frame_count, Some((tap_indices, meter_buffer)))** — After each `process()` call, **CompiledGraph** computes the peak of each tapped scratch buffer and writes it to the corresponding MeterBuffer slot.
+
+## Devices
+
+The CPAL and stream lifecycle stay inside the crate. The application is responsible for choosing the device and keeping the Stream alive for as long as input should be captured.
 
 - **input_device_list(host)** → `Vec<InputDeviceInfo>` (index, name). Use index with open_input_stream.
-- **open_input_stream(host, device_index, buffer)** — Opens that input device, F32, low-latency config; callback writes first channel into the given **InputSampleBuffer**. Returns **cpal::Stream**; caller must keep it alive.
 
-CPAL and stream lifecycle stay inside the crate; the app chooses device index and holds the Stream.
-
-## run_audio (lib)
-
-Blocks until shutdown. Does: default output device, low-latency config, send **StreamStarted(sample_rate)**, build Engine, optionally open **default input** and feed one **InputSampleBuffer**, build output stream, run callback (drain commands, run graph, interleave mono→stereo). F32 only. The app supplies command receiver, event sender, shutdown receiver, and optionally one input buffer for the default mic.
+- **open_input_stream(host, device_index, buffer)** — Opens that input device, F32, low-latency config; callback writes first channel into the given **InputSampleBuffer**.
