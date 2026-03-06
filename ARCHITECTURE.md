@@ -56,22 +56,30 @@ _Events_ are used to notify the control thread of events such as the audio threa
 
 `NoOp`, `GraphSwapped(CompiledGraph)`, `StreamStopped`, `StreamStarted(sampleRate)`.
 
-## Sample sources and InputNode
+## Input Types
 
-**InputNode** takes `Arc<dyn SampleSource + Send + Sync>` and, each block, calls `read_block(output)` to fill its output. Two implementations:
+Inputs are just nodes in the Audio Graph that generate samples. There are three types of inputs:
 
-- **InputSampleBuffer** — Lock-free SPSC ring. **Producer**: input stream callback (e.g. mic) via `write_block(data, channels)`. **Consumer**: graph’s InputNode in the output callback. On overflow, oldest samples are dropped (read index advanced). Use for live input. `run_audio(..., Some(buffer))` wires the **default** input device to that buffer; for a specific device use **device::open_input_stream** and keep the returned Stream alive.
-- **FilePlaybackBuffer** — Whole file in memory (mono f32 at output rate). Single atomic read position; **pull-based**: the output callback reads directly. No feeder thread, so no producer/consumer rate mismatch or overflow crackle. Build with **file_feeder::load_wav_at_rate(path, output_sample_rate)** so the file is resampled to the same rate as StreamStarted.
+| Type       | Graph node                                                  | Where samples come from                                                                                              |
+| ---------- | ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| **Sine**   | `GraphNode::Sine(SineGenerator::new(freq, sample_rate))`    | Produces a basic tone at a given frequency. Computed deterministically so no buffer is needed.                       |
+| **Device** | `GraphNode::Input(InputNode::new(Arc<InputSampleBuffer>))`  | Live audio from an input device. An input stream callback writes to a SPSC buffer and the audio graph reads from it. |
+| **File**   | `GraphNode::Input(InputNode::new(Arc<FilePlaybackBuffer>))` | Reads WAV files from memory. The audio graph reads via an atomic position each block.                                |
 
-**SampleSource** trait: `read_block(&self, out: &mut [f32]) -> usize`. Fills `out` (zeroes unused suffix on underrun). Both buffer types implement it so InputNode is agnostic.
+### SampleSource and Buffer Types
 
-## File feeder (WAV)
+Device and File inputs use the **SampleSource** trait via **InputNode**. Sample sources provide a `read_block` method that fills the output buffer. Each type implements this trait differently:
 
-- **load_wav_at_rate(path, target_sample_rate)** — Load WAV → mono f32; resample to target if needed (linear interpolation; one-pole lowpass when downsampling). Returns `Vec<f32>`. Use with `FilePlaybackBuffer::new(Arc::new(samples))`. Prefer this for playback.
-- **resample_to_rate(mono, file_rate, target_rate)** — Resample a mono buffer (e.g. for custom pipelines).
-- **start_file_feeder(path, buffer, target_rate)** — Optional: background thread pushes into an **InputSampleBuffer** at realtime. Use only if you need push-based file input; pull-based FilePlaybackBuffer is simpler and avoids timing issues.
+- **InputSampleBuffer** — A lock-free SPSC buffer. **Producer**: the input stream callback from CPAL. **Consumer**: the graph’s InputNode in the output callback. On overflow, oldest samples are dropped.
 
-Use **StreamStarted(sample_rate)** as `target_sample_rate` so the file matches the output device.
+- **FilePlaybackBuffer** — Stores the whole file in memory as mono samples at the output sample rate. The audio graph reads from it directly. Using one thread ensures no rate mismatch or overflow. Memory is loaded via the _File Feeder_.
+
+**File Feeder** - Loads WAV files and resamples them for use with file-playback inputs.
+
+- **load_wav_at_rate(path, target_sample_rate)** — Load WAV as mono f32, resample to target rate. Use with `FilePlaybackBuffer` for file tracks.
+- **resample_to_rate(mono, file_rate, target_rate)** — Resample a mono buffer.
+
+The _StreamStarted(sample_rate)_ event is used to set the target rate so the file matches the output device.
 
 ## Meter taps
 
@@ -89,11 +97,3 @@ CPAL and stream lifecycle stay inside the crate; the app chooses device index an
 ## run_audio (lib)
 
 Blocks until shutdown. Does: default output device, low-latency config, send **StreamStarted(sample_rate)**, build Engine, optionally open **default input** and feed one **InputSampleBuffer**, build output stream, run callback (drain commands, run graph, interleave mono→stereo). F32 only. The app supplies command receiver, event sender, shutdown receiver, and optionally one input buffer for the default mic.
-
-## Summary
-
-- **Graph** = DAG on control; **CompiledGraph** = topo-ordered execution plan + scratch buffers + optional meter taps; **Engine** = run it on the audio thread.
-- **Command/Event** = lock-free SPSC; drain on audio, poll on control.
-- **SampleSource** = thing the graph reads from; **InputSampleBuffer** (live) and **FilePlaybackBuffer** (file, pull-based) implement it.
-- **MeterBuffer** + **tap_indices** in compile = per-tap peaks written by **CompiledGraph::process**, read by control for meters.
-- **StreamStarted(rate)** = use this rate for files and graph so everything is sample-locked.
