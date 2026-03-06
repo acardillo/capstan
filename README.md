@@ -11,6 +11,7 @@ Licensed under the [MIT License](LICENSE).
 ```bash
 cargo build
 cargo test
+cargo bench          # graph compile and ring buffer throughput
 cargo run --example daw
 cargo run --example memo
 ```
@@ -31,6 +32,7 @@ Run with `cargo run --example memo`.
 
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — Types, data flow, and how the system is structured.
 - **[docs/DESIGN.md](docs/DESIGN.md)** — Why: two threads, lock-free, compiled graph, pull-based file playback.
+- **[docs/PERFORMANCE.md](docs/PERFORMANCE.md)** — Performance and limits: audio-thread rules, callback size, graph size, ring buffer capacities.
 
 ## Pre-commit (format + lint)
 

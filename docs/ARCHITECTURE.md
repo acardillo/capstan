@@ -105,14 +105,14 @@ The CPAL and stream lifecycle stay inside the crate. The application is responsi
 
 The graph is built from these node types:
 
-| GraphNode  | Type          | Role                                                                                         |
-| ---------- | ------------- | -------------------------------------------------------------------------------------------- |
-| **Sine**   | SineGenerator | Tone at a given frequency. Phase is continuous across blocks.                                |
-| **Gain**   | GainProcessor | Linear gain (1.0 = unity, 0.0 = silence).                                                    |
-| **Mixer**  | Mixer         | Sums N inputs with per-input linear gain.                                                    |
-| **Input**  | InputNode     | Reads from a **SampleSource** (device ring buffer or file playback buffer).                  |
-| **Delay**  | DelayLine     | One input, one output; delay time in ms. Circular buffer; set via `set_delay_ms`.            |
-| **Biquad** | BiquadFilter  | Lowpass or highpass. Direct Form I; `lowpass(sample_rate, cutoff_hz, q)` or `highpass(...)`. |
+| GraphNode  | Type          | Role                                                                                                                                                                                 |
+| ---------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Sine**   | SineGenerator | Tone at a given frequency. Phase is continuous across blocks.                                                                                                                        |
+| **Gain**   | GainProcessor | Linear gain (1.0 = unity, 0.0 = silence).                                                                                                                                            |
+| **Mixer**  | Mixer         | Sums N inputs with per-input linear gain.                                                                                                                                            |
+| **Input**  | InputNode     | Reads from a **SampleSource** (device ring buffer or file playback buffer).                                                                                                          |
+| **Delay**  | DelayLine     | One input, one output; delay time in ms. Circular buffer; set via `set_delay_ms`.                                                                                                    |
+| **Biquad** | BiquadFilter  | Lowpass or highpass. Direct Form I; `lowpass(sample_rate, cutoff_hz, q)` or `highpass(...)`.                                                                                         |
 | **Record** | RecordNode    | Pass-through that appends the signal to a shared [`RecordBuffer`](crate::record::RecordBuffer) when armed. Use to record through the graph (e.g. input → effects → Record → output). |
 
 ## Recording through the graph

@@ -33,3 +33,6 @@ This document explains the design decisions/rationale behind the architecture.
 **Why:** We initially used a **push-based** design with a feeder thread that decoded, resampled the file and wrote chunks into a ring buffer that the audio thread read from. Scheduling jitter meant the feeder and the callback often got out of sync manifesting as crackle and drift in the audio. This was fixed by switching to a simpler **pull-based** model. The whole file is loaded once on the control thread, then the audio thread only reads the next block each callback. No second thread, no rate matching, no producer/consumer coordination.
 
 **Tradeoff:** Memory holds the full decoded file. For long or many simultaneous files that can add up. Future work could explore a more memory-efficient approach such as streaming the file or using a more efficient resampling algorithm. For now, this design is simple and avoids the fragility of a feeder thread in favor of the real-time path.
+
+For more details, see [ARCHITECTURE.md](ARCHITECTURE.md).
+For concrete limits, buffer sizing, and audio-thread rules, see [PERFORMANCE.md](PERFORMANCE.md).
