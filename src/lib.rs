@@ -156,6 +156,34 @@ pub fn stream_config_with_low_latency(supported: &cpal::SupportedStreamConfig) -
 /// If `input_buffer` is `Some`, the default input device is opened when possible and its callback
 /// feeds the buffer (for graphs that use an `Input` node). If input cannot be opened, playback
 /// continues with output only and no error is returned.
+///
+/// # Example
+///
+/// Typical setup: create channels, spawn the audio thread with `run_audio`, send a compiled graph
+/// via `Command::SwapGraph`, and shut down when done. This example does not open a device.
+///
+/// ```no_run
+/// use capstan::command::{command_channel, Command};
+/// use capstan::event::event_channel;
+/// use capstan::run_audio;
+/// use std::thread;
+///
+/// let (cmd_tx, cmd_rx) = command_channel(64);
+/// let (evt_tx, evt_rx) = event_channel(64);
+/// let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel();
+///
+/// let audio_handle = thread::spawn(move || {
+///     run_audio(cmd_rx, evt_tx, shutdown_rx, None).ok()
+/// });
+///
+/// // ... build graph, compile, then:
+/// // let _ = cmd_tx.try_send(Command::SwapGraph(compiled));
+/// // when done:
+/// // let _ = shutdown_tx.send(());
+/// // let _ = audio_handle.join();
+/// # let _ = shutdown_tx.send(());
+/// # let _ = audio_handle.join();
+/// ```
 pub fn run_audio(
     cmd_rx: CommandReceiver,
     evt_tx: EventSender,

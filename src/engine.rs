@@ -8,6 +8,34 @@ use crate::nodes::GainProcessor;
 
 /// Engine state: optional compiled graph (when set, it is run); otherwise silence.
 /// SetGain updates a stored gain (for future use, e.g. master gain).
+///
+/// # Example
+///
+/// Run a compiled graph without opening an audio device (e.g. for tests or headless use):
+///
+/// ```
+/// use capstan::command::{command_channel, Command};
+/// use capstan::engine::Engine;
+/// use capstan::event::event_channel;
+/// use capstan::graph::{AudioGraph, GraphNode};
+/// use capstan::nodes::{GainProcessor, SineGenerator};
+///
+/// let (cmd_tx, cmd_rx) = command_channel(8);
+/// let (evt_tx, _) = event_channel(4);
+/// let mut engine = Engine::new(48_000, 440.0, 0.5);
+///
+/// let mut g = AudioGraph::new();
+/// g.add_node(GraphNode::Sine(SineGenerator::new(440.0, 48_000)));
+/// g.add_node(GraphNode::Gain(GainProcessor::new(0.3)));
+/// g.add_edge(capstan::graph::NodeId::new(0), capstan::graph::NodeId::new(1));
+/// let compiled = g.compile(64).unwrap();
+///
+/// engine.apply_command(Command::SwapGraph(compiled), &evt_tx);
+/// let mut buf = vec![0.0f32; 64];
+/// engine.render_block(&mut buf);
+/// let peak = buf.iter().map(|s| s.abs()).fold(0.0f32, |a, b| a.max(b));
+/// assert!(peak > 0.0 && peak <= 0.32);
+/// ```
 pub struct Engine {
     gain_processor: GainProcessor,
     should_quit: bool,

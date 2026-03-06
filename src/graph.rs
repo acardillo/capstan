@@ -159,6 +159,26 @@ impl AudioGraph {
     }
 
     /// Builds a CompiledGraph: topo-sorted nodes, one scratch buffer per node, and input indices per node.
+    ///
+    /// # Example
+    ///
+    /// Build a simple chain (sine → gain), compile it, and process a few blocks:
+    ///
+    /// ```
+    /// use capstan::graph::{AudioGraph, GraphNode};
+    /// use capstan::nodes::{GainProcessor, SineGenerator};
+    ///
+    /// let mut g = AudioGraph::new();
+    /// let sine = g.add_node(GraphNode::Sine(SineGenerator::new(440.0, 48_000)));
+    /// let gain = g.add_node(GraphNode::Gain(GainProcessor::new(0.5)));
+    /// g.add_edge(sine, gain);
+    ///
+    /// let mut compiled = g.compile(64).unwrap();
+    /// let mut output = vec![0.0f32; 64];
+    /// compiled.process(&mut output);
+    /// let peak = output.iter().map(|s| s.abs()).fold(0.0f32, |a, b| a.max(b));
+    /// assert!(peak > 0.0 && peak <= 0.51);
+    /// ```
     pub fn compile(&self, frame_count: usize) -> Result<CompiledGraph, GraphError> {
         self.compile_with_meter(frame_count, None)
     }
