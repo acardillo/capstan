@@ -6,9 +6,9 @@ A real-time audio processing library. Build graphs of nodes (sine, gain, mixer, 
 
 Licensed under the [MIT License](LICENSE).
 
-## Quick start
+## Quick Start Example
 
-Play a 440 Hz tone for 2 seconds, then exit. Shows the core flow: channels → `run_audio` in a thread → build graph → `SwapGraph` → quit.
+Play a 440 Hz tone for 2 seconds, then exit.
 
 ```rust,no_run
 use capstan::command::{command_channel, Command};
