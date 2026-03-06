@@ -106,10 +106,16 @@ mod tests {
 
         engine.drain_commands(&cmd_rx, &evt_tx);
 
-        assert!(cmd_rx.try_recv().is_none(), "receiver should be empty after drain");
+        assert!(
+            cmd_rx.try_recv().is_none(),
+            "receiver should be empty after drain"
+        );
         let mut buf = vec![0.0f32; 64];
         engine.render_block(&mut buf);
-        assert!(buf.iter().all(|&s| s == 0.0), "no graph => silence after drain");
+        assert!(
+            buf.iter().all(|&s| s == 0.0),
+            "no graph => silence after drain"
+        );
     }
 
     #[test]
@@ -144,7 +150,10 @@ mod tests {
         cmd_tx.try_send(Command::Quit).unwrap();
         engine.process_audio(&cmd_rx, &evt_tx, &mut buf);
 
-        assert!(buf.iter().all(|&s| s == 0.0), "process_audio should output silence when quit");
+        assert!(
+            buf.iter().all(|&s| s == 0.0),
+            "process_audio should output silence when quit"
+        );
     }
 
     #[test]
@@ -157,7 +166,10 @@ mod tests {
         cmd_tx.try_send(Command::SetGain(0.25)).unwrap();
         engine.process_audio(&cmd_rx, &evt_tx, &mut buf);
 
-        assert!(buf.iter().all(|&s| s == 0.0), "no graph => silence after drain");
+        assert!(
+            buf.iter().all(|&s| s == 0.0),
+            "no graph => silence after drain"
+        );
     }
 
     #[test]
@@ -178,7 +190,10 @@ mod tests {
         let mut buf = vec![0.0f32; 64];
         engine.render_block(&mut buf);
         let max_abs = buf.iter().map(|s| s.abs()).fold(0.0f32, |a, b| a.max(b));
-        assert!(max_abs > 0.0 && max_abs <= 0.11, "compiled graph (gain 0.1) should run");
+        assert!(
+            max_abs > 0.0 && max_abs <= 0.11,
+            "compiled graph (gain 0.1) should run"
+        );
     }
 
     #[test]
@@ -196,7 +211,10 @@ mod tests {
         g.add_edge(crate::graph::NodeId::new(0), crate::graph::NodeId::new(1));
         let first = g.compile(64).unwrap();
         engine.apply_command(Command::SwapGraph(first), &evt_tx);
-        assert!(evt_rx.try_recv().is_none(), "first swap has no previous graph");
+        assert!(
+            evt_rx.try_recv().is_none(),
+            "first swap has no previous graph"
+        );
 
         let mut g2 = AudioGraph::new();
         g2.add_node(GraphNode::Sine(SineGenerator::new(880.0, 48_000)));
@@ -208,4 +226,3 @@ mod tests {
         assert!(matches!(old, crate::event::Event::GraphSwapped(_)));
     }
 }
-

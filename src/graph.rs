@@ -158,7 +158,8 @@ impl AudioGraph {
             .iter()
             .map(|&id| self.nodes[id.as_usize()].clone())
             .collect();
-        let scratch_buffers: Vec<AudioBuffer> = (0..n).map(|_| AudioBuffer::new(frame_count)).collect();
+        let scratch_buffers: Vec<AudioBuffer> =
+            (0..n).map(|_| AudioBuffer::new(frame_count)).collect();
         let input_buf_indices: Vec<Vec<usize>> = (0..n)
             .map(|i| {
                 (0..n)
@@ -220,9 +221,7 @@ impl CompiledGraph {
         if node_count == 0 {
             return;
         }
-        let out_len = output
-            .len()
-            .min(self.scratch_buffers[0].len());
+        let out_len = output.len().min(self.scratch_buffers[0].len());
         if out_len == 0 {
             return;
         }
@@ -235,20 +234,20 @@ impl CompiledGraph {
                 .collect();
             self.nodes[i].process(&input_slices, &mut out_buf.as_mut_slice()[..out_len]);
         }
-        output[..out_len].copy_from_slice(&self.scratch_buffers[node_count - 1].as_slice()[..out_len]);
+        output[..out_len]
+            .copy_from_slice(&self.scratch_buffers[node_count - 1].as_slice()[..out_len]);
         if output.len() > out_len {
             output[out_len..].fill(0.0);
         }
 
-        if let (Some(ref tap_indices), Some(ref meter_buffer)) = (&self.tap_indices, &self.meter_buffer) {
+        if let (Some(ref tap_indices), Some(ref meter_buffer)) =
+            (&self.tap_indices, &self.meter_buffer)
+        {
             for (slot, &scratch_idx) in tap_indices.iter().enumerate() {
                 if scratch_idx < self.scratch_buffers.len() {
                     let buf = &self.scratch_buffers[scratch_idx];
                     let slice = &buf.as_slice()[..out_len];
-                    let peak = slice
-                        .iter()
-                        .map(|&s| s.abs())
-                        .fold(0.0f32, |a, b| a.max(b));
+                    let peak = slice.iter().map(|&s| s.abs()).fold(0.0f32, |a, b| a.max(b));
                     meter_buffer.write_peak(slot, peak);
                 }
             }
@@ -329,7 +328,10 @@ mod tests {
         let mut output = vec![0.0f32; 64];
         compiled.process(&mut output);
         let max_abs = output.iter().map(|s| s.abs()).fold(0.0f32, |a, b| a.max(b));
-        assert!(max_abs > 0.0 && max_abs <= 0.26, "sine then gain 0.25 => amplitude ~0.25");
+        assert!(
+            max_abs > 0.0 && max_abs <= 0.26,
+            "sine then gain 0.25 => amplitude ~0.25"
+        );
     }
 
     #[test]
@@ -345,7 +347,10 @@ mod tests {
         let mut output = vec![0.0f32; 64];
         compiled.process(&mut output);
         let max_abs = output.iter().map(|s| s.abs()).fold(0.0f32, |a, b| a.max(b));
-        assert!(max_abs > 0.0 && max_abs <= 1.1, "two sines mixed at 0.5 each => sum amplitude <= 1");
+        assert!(
+            max_abs > 0.0 && max_abs <= 1.1,
+            "two sines mixed at 0.5 each => sum amplitude <= 1"
+        );
     }
 
     #[test]
@@ -362,10 +367,16 @@ mod tests {
         let mut compiled = g.compile(64).unwrap();
         let mut output = vec![1.0f32; 64];
         compiled.process(&mut output);
-        assert!(output.iter().all(|&s| s == 0.0), "input underrun => silence");
+        assert!(
+            output.iter().all(|&s| s == 0.0),
+            "input underrun => silence"
+        );
         buf.write_block(&[0.5f32; 64], 1);
         compiled.process(&mut output);
-        assert!(output.iter().all(|&s| (s - 0.25).abs() < 1e-5), "input 0.5 * gain 0.5 => 0.25");
+        assert!(
+            output.iter().all(|&s| (s - 0.25).abs() < 1e-5),
+            "input 0.5 * gain 0.5 => 0.25"
+        );
     }
 
     #[test]
@@ -385,6 +396,9 @@ mod tests {
         compiled.process(&mut output);
         let peaks = meter.read_peaks();
         assert_eq!(peaks.len(), 1);
-        assert!(peaks[0] > 0.0 && peaks[0] <= 0.11, "tap 1 = gain output, peak ~0.1");
+        assert!(
+            peaks[0] > 0.0 && peaks[0] <= 0.11,
+            "tap 1 = gain output, peak ~0.1"
+        );
     }
 }

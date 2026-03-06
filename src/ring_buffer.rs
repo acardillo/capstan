@@ -2,8 +2,8 @@
 //! between the control thread and the audio thread
 
 use std::mem::MaybeUninit;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::ptr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Lock-free SPSC ring buffer. One thread may call `try_send`; another may call `try_recv`.
 /// No allocation in send/recv; capacity fixed at creation.
@@ -16,18 +16,18 @@ pub struct RingBuffer<T> {
     write_index: AtomicUsize,
     /// Consumer index: next slot to read. Producer never writes this.
     read_index: AtomicUsize,
-} 
+}
 
 impl<T> RingBuffer<T> {
     /// Creates a ring buffer with the given capacity. No allocation after this.
     pub fn new(capacity: usize) -> Self {
         assert!(capacity > 0, "capacity must be > 0");
         let storage: Box<[MaybeUninit<T>]> = Box::new_uninit_slice(capacity);
-        RingBuffer { 
+        RingBuffer {
             storage,
-            cap: capacity, 
-            write_index: AtomicUsize::new(0), 
-            read_index: AtomicUsize::new(0) 
+            cap: capacity,
+            write_index: AtomicUsize::new(0),
+            read_index: AtomicUsize::new(0),
         }
     }
 
@@ -52,7 +52,8 @@ impl<T> RingBuffer<T> {
             ptr::write(ptr, MaybeUninit::new(value));
         }
 
-        self.write_index.store(write.wrapping_add(1), Ordering::Release);
+        self.write_index
+            .store(write.wrapping_add(1), Ordering::Release);
         Ok(())
     }
 
@@ -76,7 +77,8 @@ impl<T> RingBuffer<T> {
             let ptr = self.storage.as_ptr().add(index) as *mut MaybeUninit<T>;
             let value = ptr::read(ptr);
 
-            self.read_index.store(read.wrapping_add(1), Ordering::Release);
+            self.read_index
+                .store(read.wrapping_add(1), Ordering::Release);
             Some(value.assume_init())
         }
     }
@@ -116,7 +118,7 @@ mod tests {
     /// Test that receiving from an empty buffer returns None.
     fn test_empty_recv_returns_none() {
         let ring_buffer: RingBuffer<i32> = RingBuffer::new(1);
-        assert_eq!(ring_buffer.try_recv(), None); 
+        assert_eq!(ring_buffer.try_recv(), None);
     }
 
     #[test]

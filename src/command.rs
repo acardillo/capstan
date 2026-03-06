@@ -55,7 +55,7 @@ pub fn command_channel(capacity: usize) -> (CommandSender, CommandReceiver) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Command, command_channel};
+    use super::{command_channel, Command};
 
     #[test]
     /// Test commands are equal if they are cloned.

@@ -25,7 +25,7 @@ pub struct EventSender {
 impl EventSender {
     /// Tries to send an event. Returns `Ok(())` if enqueued, `Err(event)` if the buffer is full.
     pub fn try_send(&self, event: Event) -> Result<(), Event> {
-       self.inner.try_send(event)
+        self.inner.try_send(event)
     }
 }
 
@@ -47,14 +47,14 @@ pub fn event_channel(capacity: usize) -> (EventSender, EventReceiver) {
     let ring_buffer = RingBuffer::<Event>::new(capacity);
     let arc = Arc::new(ring_buffer);
     (
-        EventSender { inner: arc.clone(), },
+        EventSender { inner: arc.clone() },
         EventReceiver { inner: arc },
     )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Event, event_channel};
+    use super::{event_channel, Event};
 
     #[test]
     fn test_event_equality() {

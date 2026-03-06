@@ -63,11 +63,7 @@ fn one_pole_lowpass_coeff(cutoff_hz: f32, sample_rate: u32) -> f32 {
 
 /// Resamples `mono` (at `file_rate`) to `target_sample_rate`, returning a new buffer.
 /// Uses linear interpolation; applies one-pole lowpass when downsampling.
-pub fn resample_to_rate(
-    mono: &[f32],
-    file_rate: u32,
-    target_sample_rate: u32,
-) -> Vec<f32> {
+pub fn resample_to_rate(mono: &[f32], file_rate: u32, target_sample_rate: u32) -> Vec<f32> {
     let len = mono.len();
     if len == 0 {
         return Vec::new();
@@ -81,9 +77,8 @@ pub fn resample_to_rate(
     let next = |j: usize| (j + 1) % len;
     let linear = |a: f32, b: f32, t: f32| a + t * (b - a);
     let do_lowpass = file_rate > target_sample_rate;
-    let alpha = do_lowpass.then(|| {
-        one_pole_lowpass_coeff(0.45f32 * target_sample_rate as f32, target_sample_rate)
-    });
+    let alpha = do_lowpass
+        .then(|| one_pole_lowpass_coeff(0.45f32 * target_sample_rate as f32, target_sample_rate));
     let mut lowpass_state = 0.0f32;
 
     for i in 0..out_len {

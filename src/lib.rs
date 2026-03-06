@@ -18,11 +18,11 @@
 pub mod audio_buffer;
 pub mod command;
 pub mod device;
-pub mod file_feeder;
-pub mod input_buffer;
 pub mod engine;
 pub mod event;
+pub mod file_feeder;
 pub mod graph;
+pub mod input_buffer;
 pub mod meter;
 pub mod nodes;
 pub mod processor;
@@ -77,9 +77,7 @@ pub fn default_output_sample_rate() -> Option<u32> {
 /// device reports a range. Uses `LOW_LATENCY_BUFFER_FRAMES` if it lies within the supported
 /// range, otherwise the device minimum. If the device reports `Unknown`, requests the fixed
 /// size anyway (some backends accept it).
-pub fn stream_config_with_low_latency(
-    supported: &cpal::SupportedStreamConfig,
-) -> StreamConfig {
+pub fn stream_config_with_low_latency(supported: &cpal::SupportedStreamConfig) -> StreamConfig {
     let mut config = supported.config();
     let requested = LOW_LATENCY_BUFFER_FRAMES;
     match supported.buffer_size() {
@@ -150,8 +148,9 @@ pub fn run_audio(
                         Ok(input_stream) => {
                             let _ = input_stream.play();
                             let _input_stream = input_stream;
-                            let err_fn_out =
-                                move |err: cpal::StreamError| eprintln!("output stream error: {}", err);
+                            let err_fn_out = move |err: cpal::StreamError| {
+                                eprintln!("output stream error: {}", err)
+                            };
                             let out_stream = device
                                 .build_output_stream(
                                     &config,
@@ -176,8 +175,7 @@ pub fn run_audio(
         }
     }
 
-    let err_fn =
-        move |err: cpal::StreamError| eprintln!("output stream error: {}", err);
+    let err_fn = move |err: cpal::StreamError| eprintln!("output stream error: {}", err);
     let stream = device
         .build_output_stream(
             &config,

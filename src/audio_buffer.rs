@@ -9,7 +9,11 @@ pub struct AudioBuffer {
 impl PartialEq for AudioBuffer {
     fn eq(&self, other: &Self) -> bool {
         self.storage.len() == other.storage.len()
-            && self.storage.iter().zip(other.storage.iter()).all(|(a, b)| a == b)
+            && self
+                .storage
+                .iter()
+                .zip(other.storage.iter())
+                .all(|(a, b)| a == b)
     }
 }
 

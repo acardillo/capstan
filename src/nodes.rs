@@ -128,7 +128,10 @@ impl DelayLine {
 
     /// Sets delay time in milliseconds (clamped to 0..max).
     pub fn set_delay_ms(&mut self, delay_ms: f32) {
-        self.delay_ms = delay_ms.clamp(0.0, 1000.0 * self.buffer.len() as f32 / self.sample_rate as f32);
+        self.delay_ms = delay_ms.clamp(
+            0.0,
+            1000.0 * self.buffer.len() as f32 / self.sample_rate as f32,
+        );
     }
 
     fn delay_samples(&self) -> usize {
@@ -188,8 +191,15 @@ impl BiquadFilter {
     pub fn lowpass(sample_rate: u32, cutoff_hz: f32, q: f32) -> Self {
         let (b0, b1, b2, a1, a2) = Self::lowpass_coeffs(sample_rate, cutoff_hz, q);
         BiquadFilter {
-            b0, b1, b2, a1, a2,
-            x1: 0.0, x2: 0.0, y1: 0.0, y2: 0.0,
+            b0,
+            b1,
+            b2,
+            a1,
+            a2,
+            x1: 0.0,
+            x2: 0.0,
+            y1: 0.0,
+            y2: 0.0,
             sample_rate,
         }
     }
@@ -198,8 +208,15 @@ impl BiquadFilter {
     pub fn highpass(sample_rate: u32, cutoff_hz: f32, q: f32) -> Self {
         let (b0, b1, b2, a1, a2) = Self::highpass_coeffs(sample_rate, cutoff_hz, q);
         BiquadFilter {
-            b0, b1, b2, a1, a2,
-            x1: 0.0, x2: 0.0, y1: 0.0, y2: 0.0,
+            b0,
+            b1,
+            b2,
+            a1,
+            a2,
+            x1: 0.0,
+            x2: 0.0,
+            y1: 0.0,
+            y2: 0.0,
             sample_rate,
         }
     }
@@ -245,7 +262,9 @@ impl Processor for BiquadFilter {
         let n = output.len().min(inp.len());
         for i in 0..n {
             let x = inp[i];
-            let y = self.b0 * x + self.b1 * self.x1 + self.b2 * self.x2 - self.a1 * self.y1 - self.a2 * self.y2;
+            let y = self.b0 * x + self.b1 * self.x1 + self.b2 * self.x2
+                - self.a1 * self.y1
+                - self.a2 * self.y2;
             self.x2 = self.x1;
             self.x1 = x;
             self.y2 = self.y1;
@@ -289,8 +308,8 @@ impl Processor for InputNode {
 #[cfg(test)]
 mod tests {
     use super::{GainProcessor, Mixer, SineGenerator};
-    use crate::processor::Processor;
     use crate::audio_buffer::AudioBuffer;
+    use crate::processor::Processor;
 
     #[test]
     /// Test that the sine generator produces sine-like output - has non-zero values and values between -1 and 1.
@@ -314,9 +333,10 @@ mod tests {
         sine_generator.process(&[], buffer2.as_mut_slice());
 
         let phase_after_first_block = (128.0 * 440.0 / 48000.0) % 1.0;
-        let expected_first_of_second = f32::sin(2.0 * std::f32::consts::PI * phase_after_first_block);
+        let expected_first_of_second =
+            f32::sin(2.0 * std::f32::consts::PI * phase_after_first_block);
         let actual_first = buffer2.as_slice()[0];
-        let epsilon = 1e-5;  // float comparison
+        let epsilon = 1e-5; // float comparison
         assert!((actual_first - expected_first_of_second).abs() < epsilon);
         assert_ne!(buffer.as_slice(), buffer2.as_slice());
     }
@@ -353,10 +373,7 @@ mod tests {
         in0.as_mut_slice().fill(1.0);
         in1.as_mut_slice().fill(1.0);
         let mut out = AudioBuffer::new(4);
-        mixer.process(
-            &[in0.as_slice(), in1.as_slice()],
-            out.as_mut_slice(),
-        );
+        mixer.process(&[in0.as_slice(), in1.as_slice()], out.as_mut_slice());
         assert!(out.as_slice().iter().all(|&x| (x - 1.0).abs() < 1e-5));
     }
 
@@ -371,8 +388,14 @@ mod tests {
         input[0] = 1.0; // impulse
         let mut output = vec![0.0f32; 128];
         delay.process(&[&input[..]], &mut output[..]);
-        assert_eq!(output[0], 0.0, "first sample should be pre-impulse buffer (zero)");
-        assert!((output[delay_samples] - 1.0).abs() < 1e-5, "impulse should appear at delay_samples");
+        assert_eq!(
+            output[0], 0.0,
+            "first sample should be pre-impulse buffer (zero)"
+        );
+        assert!(
+            (output[delay_samples] - 1.0).abs() < 1e-5,
+            "impulse should appear at delay_samples"
+        );
     }
 
     #[test]
@@ -406,6 +429,9 @@ mod tests {
         let mut output = vec![0.0f32; 256];
         hp.process(&[&input[..]], &mut output[..]);
         let max_out = output.iter().map(|x| x.abs()).fold(0.0f32, |a, b| a.max(b));
-        assert!(max_out < 1.0, "highpass should attenuate DC relative to input");
+        assert!(
+            max_out < 1.0,
+            "highpass should attenuate DC relative to input"
+        );
     }
 }

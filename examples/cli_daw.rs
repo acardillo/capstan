@@ -44,7 +44,9 @@ struct Cli {
 enum TrackSource {
     None,
     Device(usize),
-    Sine { freq_hz: f32 },
+    Sine {
+        freq_hz: f32,
+    },
     File {
         path: PathBuf,
         buffer: Arc<dyn SampleSource + Send + Sync>,
@@ -70,7 +72,11 @@ impl OpenInputs {
         }
     }
 
-    fn ensure_device(&mut self, host: &cpal::Host, device_index: usize) -> Result<Arc<dyn SampleSource + Send + Sync>, DeviceError> {
+    fn ensure_device(
+        &mut self,
+        host: &cpal::Host,
+        device_index: usize,
+    ) -> Result<Arc<dyn SampleSource + Send + Sync>, DeviceError> {
         if let Some(buf) = self.device_to_buffer.get(&device_index) {
             return Ok(Arc::clone(buf));
         }
@@ -78,7 +84,8 @@ impl OpenInputs {
         let stream = open_input_stream(host, device_index, Arc::clone(&buffer))?;
         self._streams.push(stream);
         let buffer_dyn: Arc<dyn SampleSource + Send + Sync> = buffer;
-        self.device_to_buffer.insert(device_index, Arc::clone(&buffer_dyn));
+        self.device_to_buffer
+            .insert(device_index, Arc::clone(&buffer_dyn));
         Ok(buffer_dyn)
     }
 
@@ -102,9 +109,9 @@ fn build_session_graph(
         let out = g.add_node(GraphNode::Gain(GainProcessor::new(master_gain)));
         g.add_edge(inp, out);
         return match &meter_buffer {
-            Some(mb) if mb.len() == 1 => {
-                g.compile_with_meter(DEFAULT_FRAME_COUNT, Some((vec![1], Arc::clone(mb)))).ok()
-            }
+            Some(mb) if mb.len() == 1 => g
+                .compile_with_meter(DEFAULT_FRAME_COUNT, Some((vec![1], Arc::clone(mb))))
+                .ok(),
             _ => g.compile(DEFAULT_FRAME_COUNT).ok(),
         };
     }
@@ -112,18 +119,21 @@ fn build_session_graph(
     let mut gain_node_ids = Vec::with_capacity(tracks.len());
     for track in tracks {
         let source_node = match &track.source {
-            TrackSource::None => g.add_node(GraphNode::Input(InputNode::new(Arc::clone(silent_buffer)))),
+            TrackSource::None => {
+                g.add_node(GraphNode::Input(InputNode::new(Arc::clone(silent_buffer))))
+            }
             TrackSource::Device(d) => {
                 let buf = open_inputs
                     .get_buffer(*d)
                     .unwrap_or_else(|| Arc::clone(silent_buffer));
                 g.add_node(GraphNode::Input(InputNode::new(buf)))
             }
-            TrackSource::Sine { freq_hz } => g.add_node(GraphNode::Sine(SineGenerator::new(
-                *freq_hz,
-                sample_rate,
-            ))),
-            TrackSource::File { buffer, .. } => g.add_node(GraphNode::Input(InputNode::new(Arc::clone(buffer)))),
+            TrackSource::Sine { freq_hz } => {
+                g.add_node(GraphNode::Sine(SineGenerator::new(*freq_hz, sample_rate)))
+            }
+            TrackSource::File { buffer, .. } => {
+                g.add_node(GraphNode::Input(InputNode::new(Arc::clone(buffer))))
+            }
         };
         let gain = g.add_node(GraphNode::Gain(GainProcessor::new(track.gain)));
         g.add_edge(source_node, gain);
@@ -143,7 +153,8 @@ fn build_session_graph(
     let compiled = match &meter_buffer {
         Some(mb) if mb.len() == n + 1 => {
             let tap_indices: Vec<usize> = (0..n).map(|i| n + i).chain(once(2 * n + 1)).collect();
-            g.compile_with_meter(DEFAULT_FRAME_COUNT, Some((tap_indices, Arc::clone(mb)))).ok()
+            g.compile_with_meter(DEFAULT_FRAME_COUNT, Some((tap_indices, Arc::clone(mb))))
+                .ok()
         }
         _ => g.compile(DEFAULT_FRAME_COUNT).ok(),
     };
@@ -240,7 +251,12 @@ const SUCCESS_PREFIX: &str = "  ✓ ";
 const WARNING_PREFIX: &str = "\u{200B}  ";
 const ERROR_PREFIX: &str = "  ✗ ";
 
-fn draw_history(stdout: &mut impl Write, history: &[String], start_row: u16, max_lines: usize) -> std::io::Result<()> {
+fn draw_history(
+    stdout: &mut impl Write,
+    history: &[String],
+    start_row: u16,
+    max_lines: usize,
+) -> std::io::Result<()> {
     let take = history.len().saturating_sub(max_lines);
     let lines: Vec<_> = history[take..].iter().rev().collect();
     for (i, s) in lines.iter().enumerate() {
@@ -254,7 +270,12 @@ fn draw_history(stdout: &mut impl Write, history: &[String], start_row: u16, max
         } else {
             Color::DarkGrey
         };
-        execute!(stdout, MoveTo(0, row), Clear(ClearType::CurrentLine), SetForegroundColor(color))?;
+        execute!(
+            stdout,
+            MoveTo(0, row),
+            Clear(ClearType::CurrentLine),
+            SetForegroundColor(color)
+        )?;
         let truncate = 200;
         // Strip zero-width space from warning lines so they display as "  msg" (U+200B is 3 bytes in UTF-8)
         let visible: String = if s.starts_with(WARNING_PREFIX) {
@@ -271,7 +292,11 @@ fn draw_history(stdout: &mut impl Write, history: &[String], start_row: u16, max
         execute!(stdout, ResetColor)?;
     }
     for i in lines.len()..max_lines {
-        execute!(stdout, MoveTo(0, start_row + i as u16), Clear(ClearType::CurrentLine))?;
+        execute!(
+            stdout,
+            MoveTo(0, start_row + i as u16),
+            Clear(ClearType::CurrentLine)
+        )?;
     }
     Ok(())
 }
@@ -370,11 +395,13 @@ fn main() -> std::io::Result<()> {
                                 ["quit" | "q"] => {
                                     let _ = cmd_tx.try_send(Command::Quit);
                                     let _ = shutdown_tx.send(());
-                                    disable_raw_mode()
-                                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                                    disable_raw_mode().map_err(|e| {
+                                        std::io::Error::new(std::io::ErrorKind::Other, e)
+                                    })?;
                                     let _ = audio_handle.join();
-                                    execute!(stdout, Clear(ClearType::All), MoveTo(0, 0))
-                                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                                    execute!(stdout, Clear(ClearType::All), MoveTo(0, 0)).map_err(
+                                        |e| std::io::Error::new(std::io::ErrorKind::Other, e),
+                                    )?;
                                     stdout.flush()?;
                                     return Ok(());
                                 }
@@ -400,36 +427,37 @@ fn main() -> std::io::Result<()> {
                                             status_msg = format!("Deleted track {}.", n);
                                         } else {
                                             status_kind = StatusKind::Warning;
-                                            status_msg = format!("Track number must be 1–{}.", tracks.len().max(1));
+                                            status_msg = format!(
+                                                "Track number must be 1–{}.",
+                                                tracks.len().max(1)
+                                            );
                                         }
                                     } else {
                                         status_msg = "Usage: track delete <track_no>".to_string();
                                     }
                                 }
 
-                                ["input", "--list" | "-l"] => {
-                                    match input_device_list(&host) {
-                                        Ok(devices) => {
-                                            status_kind = StatusKind::Success;
-                                            if devices.is_empty() {
-                                                status_msg = "(no input devices)".to_string();
-                                            } else {
-                                                status_msg = devices
-                                                    .iter()
-                                                    .map(|d| format!("{}: {}", d.index, d.name))
-                                                    .collect::<Vec<_>>()
-                                                    .join("  |  ");
-                                                if status_msg.len() > 120 {
-                                                    status_msg = format!("{}...", &status_msg[..117]);
-                                                }
+                                ["input", "--list" | "-l"] => match input_device_list(&host) {
+                                    Ok(devices) => {
+                                        status_kind = StatusKind::Success;
+                                        if devices.is_empty() {
+                                            status_msg = "(no input devices)".to_string();
+                                        } else {
+                                            status_msg = devices
+                                                .iter()
+                                                .map(|d| format!("{}: {}", d.index, d.name))
+                                                .collect::<Vec<_>>()
+                                                .join("  |  ");
+                                            if status_msg.len() > 120 {
+                                                status_msg = format!("{}...", &status_msg[..117]);
                                             }
                                         }
-                                        Err(e) => {
-                                            status_kind = StatusKind::Error;
-                                            status_msg = format!("List devices: {}", e);
-                                        }
                                     }
-                                }
+                                    Err(e) => {
+                                        status_kind = StatusKind::Error;
+                                        status_msg = format!("List devices: {}", e);
+                                    }
+                                },
                                 ["input", track_no, "--device", dev] => {
                                     if let (Ok(tn), Ok(d)) =
                                         (track_no.parse::<usize>(), dev.parse::<usize>())
@@ -437,8 +465,7 @@ fn main() -> std::io::Result<()> {
                                         if tn >= 1 && tn <= tracks.len() {
                                             match open_inputs.ensure_device(&host, d) {
                                                 Ok(_) => {
-                                                    tracks[tn - 1].source =
-                                                        TrackSource::Device(d);
+                                                    tracks[tn - 1].source = TrackSource::Device(d);
                                                     session_changed = true;
                                                     status_kind = StatusKind::Success;
                                                     status_msg =
@@ -446,8 +473,10 @@ fn main() -> std::io::Result<()> {
                                                 }
                                                 Err(e) => {
                                                     status_kind = StatusKind::Error;
-                                                    status_msg =
-                                                        format!("Failed to open device {}: {}", d, e);
+                                                    status_msg = format!(
+                                                        "Failed to open device {}: {}",
+                                                        d, e
+                                                    );
                                                 }
                                             }
                                         } else {
@@ -472,8 +501,7 @@ fn main() -> std::io::Result<()> {
                                                 TrackSource::Sine { freq_hz: f };
                                             session_changed = true;
                                             status_kind = StatusKind::Success;
-                                            status_msg =
-                                                format!("Track {} → sine {} Hz.", tn, f);
+                                            status_msg = format!("Track {} → sine {} Hz.", tn, f);
                                         } else if tn < 1 || tn > tracks.len() {
                                             status_kind = StatusKind::Warning;
                                             status_msg = format!(
@@ -482,7 +510,8 @@ fn main() -> std::io::Result<()> {
                                             );
                                         } else {
                                             status_kind = StatusKind::Warning;
-                                            status_msg = "Frequency must be 0–20000 Hz.".to_string();
+                                            status_msg =
+                                                "Frequency must be 0–20000 Hz.".to_string();
                                         }
                                     } else {
                                         status_msg =
@@ -499,16 +528,19 @@ fn main() -> std::io::Result<()> {
                                             let path = PathBuf::from(&path_str);
                                             match load_wav_at_rate(&path, output_sample_rate) {
                                                 Ok(samples) => {
-                                                    let buffer: Arc<dyn SampleSource + Send + Sync> =
-                                                        Arc::new(FilePlaybackBuffer::new(Arc::new(samples)));
-                                                    tracks[tn - 1].source = TrackSource::File {
-                                                        path,
-                                                        buffer,
-                                                    };
+                                                    let buffer: Arc<
+                                                        dyn SampleSource + Send + Sync,
+                                                    > = Arc::new(FilePlaybackBuffer::new(
+                                                        Arc::new(samples),
+                                                    ));
+                                                    tracks[tn - 1].source =
+                                                        TrackSource::File { path, buffer };
                                                     session_changed = true;
                                                     status_kind = StatusKind::Success;
-                                                    status_msg =
-                                                        format!("Track {} → file {}.", tn, path_str);
+                                                    status_msg = format!(
+                                                        "Track {} → file {}.",
+                                                        tn, path_str
+                                                    );
                                                 }
                                                 Err(e) => {
                                                     status_kind = StatusKind::Error;
@@ -535,7 +567,9 @@ fn main() -> std::io::Result<()> {
                                         status_kind = StatusKind::Success;
                                         status_msg = format!("Master gain set to {}.", master_gain);
                                     } else {
-                                        status_msg = "Usage: gain <level>  or  gain <track_no> <level>".to_string();
+                                        status_msg =
+                                            "Usage: gain <level>  or  gain <track_no> <level>"
+                                                .to_string();
                                     }
                                 }
                                 ["gain", track_no, level] => {
@@ -546,12 +580,17 @@ fn main() -> std::io::Result<()> {
                                             tracks[tn - 1].gain = g.clamp(0.0, 2.0);
                                             session_changed = true;
                                             status_kind = StatusKind::Success;
-                                            status_msg =
-                                                format!("Track {} gain set to {}.", tn, tracks[tn - 1].gain);
+                                            status_msg = format!(
+                                                "Track {} gain set to {}.",
+                                                tn,
+                                                tracks[tn - 1].gain
+                                            );
                                         } else {
                                             status_kind = StatusKind::Warning;
-                                            status_msg =
-                                                format!("Track number must be 1–{}.", tracks.len().max(1));
+                                            status_msg = format!(
+                                                "Track number must be 1–{}.",
+                                                tracks.len().max(1)
+                                            );
                                         }
                                     } else {
                                         status_msg = "Usage: gain <track_no> <level>".to_string();
@@ -560,7 +599,8 @@ fn main() -> std::io::Result<()> {
 
                                 _ => {
                                     status_kind = StatusKind::Warning;
-                                    status_msg = "Unknown command. Type 'help' for commands.".to_string();
+                                    status_msg =
+                                        "Unknown command. Type 'help' for commands.".to_string();
                                 }
                             }
 
@@ -609,7 +649,8 @@ fn main() -> std::io::Result<()> {
                         } else if let Some(i) = history_index {
                             if i + 1 < command_history.len() {
                                 history_index = Some(i + 1);
-                                input_line = command_history[command_history.len() - 1 - (i + 1)].clone();
+                                input_line =
+                                    command_history[command_history.len() - 1 - (i + 1)].clone();
                                 cursor_pos = input_line.len();
                             }
                         } else {
@@ -625,7 +666,8 @@ fn main() -> std::io::Result<()> {
                             cursor_pos = 0;
                         } else if let Some(i) = history_index {
                             history_index = Some(i - 1);
-                            input_line = command_history[command_history.len() - 1 - (i - 1)].clone();
+                            input_line =
+                                command_history[command_history.len() - 1 - (i - 1)].clone();
                             cursor_pos = input_line.len();
                         }
                     }
