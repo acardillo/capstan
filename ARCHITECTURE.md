@@ -11,19 +11,9 @@ Threads communicate with eachother via 2 Lock-free buffers:
 2. **Event Buffer** - Events from the audio thread to the control thread.
 
 _Commands_ are used to modify the audio graph and to quit the audio thread.
-_Events_ are used to notify the control thread of events such as the audio thread starting or stopping.
+_Events_ are used to notify the control thread of events such as the audio thread starting or stopping. |
 
-## Core Types
-
-| Type              | Thread  | Role                                                                                                                                                                    |
-| ----------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **AudioGraph**    | Control | Mutable **Directed Acyclic Graph** with nodes + adjacency list (edges).                                                                                                 |
-| **CompiledGraph** | Both    | Immutable: nodes in **topological order**, one **AudioBuffer** scratch per node. Each node reads and writes to its own buffer. The last buffer is copied to the output. |
-| **Engine**        | Audio   | Each callback: drain **Command**s, apply (e.g. SwapGraph, Quit), then run `current_graph.process(output)` or silence.                                                   |
-| **AudioBuffer**   | Audio   | Fixed-size f32 array per node. Allocated at compile time; reused every callback.                                                                                        |
-| **RingBuffer**    | Both    | Lock-free **Single Producer, Single Consumer** buffer; fixed capacity;                                                                                                  |
-
-## Data flow
+## Data Flow
 
 ```
 | CONTROL THREAD   |                           | AUDIO THREAD             |
@@ -44,7 +34,17 @@ _Events_ are used to notify the control thread of events such as the audio threa
 |                  |                           |  Output to device        |
 ```
 
-## Commands and events
+## Core Types
+
+| Type              | Thread  | Role                                                                                                                                                                    |
+| ----------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **AudioGraph**    | Control | Mutable **Directed Acyclic Graph** with nodes + adjacency list (edges).                                                                                                 |
+| **CompiledGraph** | Both    | Immutable: nodes in **topological order**, one **AudioBuffer** scratch per node. Each node reads and writes to its own buffer. The last buffer is copied to the output. |
+| **Engine**        | Audio   | Each callback: drain **Command**s, apply (e.g. SwapGraph, Quit), then run `current_graph.process(output)` or silence.                                                   |
+| **AudioBuffer**   | Audio   | Fixed-size f32 array per node. Allocated at compile time; reused every callback.                                                                                        |
+| **RingBuffer**    | Both    | Lock-free **Single Producer, Single Consumer** buffer; fixed capacity;                                                                                                  |
+
+## Commands and Events
 
 **Command** (control → audio): `NoOp`, `SetGain(f32)`, `Quit`, `Resume`, `SwapGraph(CompiledGraph)`. Engine drains at the top of each callback; SwapGraph replaces the current graph and sends the previous one back as **Event::GraphSwapped** so the control thread can drop it (no leak).
 
