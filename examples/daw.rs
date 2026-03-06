@@ -17,7 +17,9 @@ use capstan::file_feeder::load_wav_at_rate;
 use capstan::graph::{AudioGraph, CompiledGraph, GraphNode};
 use capstan::input_buffer::{FilePlaybackBuffer, InputSampleBuffer, SampleSource};
 use capstan::meter::MeterBuffer;
-use capstan::nodes::{Echo, GainProcessor, InputNode, Mixer, Overdrive, RecordNode, SineGenerator, Tremolo};
+use capstan::nodes::{
+    Echo, GainProcessor, InputNode, Mixer, Overdrive, RecordNode, SineGenerator, Tremolo,
+};
 use capstan::record::{write_wav, RecordBuffer};
 use capstan::run_audio;
 use clap::Parser;
@@ -202,7 +204,8 @@ fn build_session_graph(
     match &meter_buffer {
         Some(mb) if mb.len() == n + 1 => {
             let base = n + num_echo + num_tremolo + num_overdrive;
-            let tap_indices: Vec<usize> = (0..n).map(|i| base + i).chain(once(base + n + 1)).collect();
+            let tap_indices: Vec<usize> =
+                (0..n).map(|i| base + i).chain(once(base + n + 1)).collect();
             g.compile_with_meter(DEFAULT_FRAME_COUNT, Some((tap_indices, Arc::clone(mb))))
                 .ok()
         }
@@ -287,7 +290,10 @@ fn draw_header(
 ) -> std::io::Result<()> {
     let mut line = 0u16;
     execute!(stdout, MoveTo(0, 0), Clear(ClearType::CurrentLine))?;
-    writeln!(stdout, " track | source     | gain  | echo    | tremolo  | overdrive | level")?;
+    writeln!(
+        stdout,
+        " track | source     | gain  | echo    | tremolo  | overdrive | level"
+    )?;
     line += 1;
     for (i, track) in tracks.iter().enumerate() {
         let src = source_display(&track.source);
@@ -840,7 +846,8 @@ fn main() -> std::io::Result<()> {
                                                 tracks[tn - 1].tremolo = None;
                                                 session_changed = true;
                                                 status_kind = StatusKind::Success;
-                                                status_msg = format!("Track {} tremolo removed.", tn);
+                                                status_msg =
+                                                    format!("Track {} tremolo removed.", tn);
                                             } else {
                                                 status_kind = StatusKind::Warning;
                                                 status_msg = format!(
@@ -874,7 +881,8 @@ fn main() -> std::io::Result<()> {
                                                 } else {
                                                     status_kind = StatusKind::Warning;
                                                     status_msg =
-                                                        "Tremolo rate 0.1–20 Hz, depth 0–1.".to_string();
+                                                        "Tremolo rate 0.1–20 Hz, depth 0–1."
+                                                            .to_string();
                                                 }
                                             } else {
                                                 status_kind = StatusKind::Warning;
@@ -896,7 +904,8 @@ fn main() -> std::io::Result<()> {
                                                 tracks[tn - 1].overdrive = None;
                                                 session_changed = true;
                                                 status_kind = StatusKind::Success;
-                                                status_msg = format!("Track {} overdrive removed.", tn);
+                                                status_msg =
+                                                    format!("Track {} overdrive removed.", tn);
                                             } else {
                                                 status_kind = StatusKind::Warning;
                                                 status_msg = format!(
@@ -911,10 +920,9 @@ fn main() -> std::io::Result<()> {
                                         }
                                     }
                                     ["overdrive", track_no, amount_str] => {
-                                        if let (Ok(tn), Ok(amount)) = (
-                                            track_no.parse::<usize>(),
-                                            amount_str.parse::<f32>(),
-                                        ) {
+                                        if let (Ok(tn), Ok(amount)) =
+                                            (track_no.parse::<usize>(), amount_str.parse::<f32>())
+                                        {
                                             if (1..=tracks.len()).contains(&tn) {
                                                 if (0.0..=5.0).contains(&amount) {
                                                     tracks[tn - 1].overdrive = Some(amount);
